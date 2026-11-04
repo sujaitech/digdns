@@ -70,9 +70,11 @@
           </svg>
           <span class="display text-2xl font-extrabold">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
         </a>
-        <!-- Tabs: the three tools -->
-        <nav aria-label="Tools" class="flex gap-5 text-[15px]">
+        <!-- Tabs: the tools -->
+        <nav aria-label="Tools" class="flex flex-wrap gap-x-5 gap-y-2 text-[15px]">
           <a href="#" data-nav="report" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
+          <a href="#speed" data-nav="speed" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Page speed</a>
+          <a href="#propagation" data-nav="prop" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
           <a href="#spf-builder" data-nav="spf" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
         </nav>
@@ -103,6 +105,38 @@
           <span class="mx-1 text-white/30" aria-hidden="true">|</span>
           <button type="button" id="sample-btn" class="text-white underline underline-offset-4 hover:text-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">See a sample report</button>
         </div>
+      </div>
+
+      <!-- Header block: page speed -->
+      <div id="head-speed" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Test a page’s loading speed</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Google Lighthouse loads the page on a simulated phone or desktop and measures it, the same engine behind PageSpeed Insights and GTmetrix. A test takes 20 to 40 seconds.</p>
+        <form id="speed-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+          <label for="speed-url" class="sr-only">Page address</label>
+          <input id="speed-url" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="https://example.com" required maxlength="2000"
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+          <fieldset class="flex rounded-lg bg-white/10 p-1" aria-label="Device">
+            <label class="cursor-pointer"><input type="radio" name="speed-strategy" value="mobile" checked class="peer sr-only" /><span class="block rounded-md px-4 py-2.5 text-sm font-semibold text-white/70 peer-checked:bg-white peer-checked:text-navy peer-focus-visible:ring-2 peer-focus-visible:ring-sky">Mobile</span></label>
+            <label class="cursor-pointer"><input type="radio" name="speed-strategy" value="desktop" class="peer sr-only" /><span class="block rounded-md px-4 py-2.5 text-sm font-semibold text-white/70 peer-checked:bg-white peer-checked:text-navy peer-focus-visible:ring-2 peer-focus-visible:ring-sky">Desktop</span></label>
+          </fieldset>
+          <button id="speed-btn" type="submit" class="rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">Run speed test</button>
+        </form>
+      </div>
+
+      <!-- Header block: propagation -->
+      <div id="head-prop" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Check DNS propagation</h1>
+        <p class="mt-3 max-w-2xl text-white/80">See whether eight public DNS resolvers have picked up a change yet, compared with what your own nameserver says.</p>
+        <form id="prop-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+          <label for="prop-domain" class="sr-only">Domain or hostname</label>
+          <input id="prop-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="www.example.com" required maxlength="253"
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+          <label for="prop-type" class="sr-only">Record type</label>
+          <select id="prop-type" class="rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
+            <option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>NS</option><option>TXT</option><option>CAA</option>
+          </select>
+          <button id="prop-btn" type="submit" class="rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">Check</button>
+        </form>
       </div>
 
       <!-- Header block: SPF builder -->
@@ -139,6 +173,33 @@
       </div>
       <div id="hero" class="p-6 sm:p-10"></div>
       <div id="sections"></div>
+    </article>
+  </main>
+
+  <!-- ================= VIEW: PAGE SPEED ================= -->
+  <main id="view-speed" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div id="speed-error" role="alert" class="mb-4 hidden rounded-xl border border-fail/30 bg-white p-5 text-fail shadow-sm"></div>
+    <article id="speed-sheet" class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
+      <div class="p-6 sm:p-10">
+        <h2 class="semi-wide text-xl font-bold text-navy">What you’ll get</h2>
+        <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
+          <p><strong class="text-navy">Performance score.</strong> Lighthouse’s 0 to 100 grade for the page on a simulated device.</p>
+          <p><strong class="text-navy">Core Web Vitals.</strong> How fast the main content appears, how much the layout jumps, and how long the page stays frozen.</p>
+          <p><strong class="text-navy">Real visitors.</strong> Field data from Chrome users over the last 28 days, when the site has enough traffic.</p>
+          <p><strong class="text-navy">What to fix first.</strong> The changes with the biggest estimated time savings.</p>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <!-- ================= VIEW: PROPAGATION ================= -->
+  <main id="view-prop" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div id="prop-error" role="alert" class="mb-4 hidden rounded-xl border border-fail/30 bg-white p-5 text-fail shadow-sm"></div>
+    <article id="prop-sheet" class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
+      <div class="p-6 sm:p-10">
+        <h2 class="semi-wide text-xl font-bold text-navy">When to use this</h2>
+        <p class="mt-3 max-w-3xl text-[15px] leading-relaxed">After you change a DNS record, resolvers keep serving their cached copy until its TTL runs out. This shows which ones already have the new answer, and how long the rest may hold the old one.</p>
+      </div>
     </article>
   </main>
 
@@ -441,6 +502,8 @@ function fullRow(sectionEl) { return add(el("div", "border-t border-rule"), sect
 /* =====================================================================
    One-line verdicts
    ===================================================================== */
+const SEVERITY = ["pass", "info", "warn", "fail", "error"];
+const worstStatus = (...statuses) => statuses.filter(Boolean).reduce((a, b) => (SEVERITY.indexOf(b) > SEVERITY.indexOf(a) ? b : a), "pass");
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "Not published";
 function verdictReg(r) {
   if (!r.found) return r.status === "error" ? "Registry unreachable" : "No registry record";
@@ -489,7 +552,8 @@ function verdictTLS(t) {
    ===================================================================== */
 const RAIL = [
   ["Domain", "sec-reg",  (d) => d.registration?.status, (d) => verdictReg(d.registration || {})],
-  ["DNS",   "sec-dns",   (d) => d.dns?.status,   (d) => verdictDNS(d.dns)],
+  ["DNS",   "sec-dns",   (d) => worstStatus(d.dns?.status, d.nameservers?.status),
+                         (d) => d.nameservers?.errors?.length ? "Nameserver problem, see below" : verdictDNS(d.dns)],
   ["SPF",   "sec-spf",   (d) => d.spf?.status,   (d) => verdictSPF(d.spf)],
   ["DKIM",  "sec-dkim",  (d) => d.dkim?.status,  (d) => verdictDKIM(d.dkim)],
   ["DMARC", "sec-dmarc", (d) => d.dmarc?.status, (d) => verdictDMARC(d.dmarc)],
@@ -578,7 +642,12 @@ function renderHero(data, { pending = false } = {}) {
   const rail = renderRail(data, pending);
   add(hero, rail);
   requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
-  if (!pending) add(hero, el("p", "mt-6 text-xs text-ink/50", relativeChecked(data)));
+  if (!pending) {
+    add(hero, add(el("div", "mt-7 flex flex-wrap items-center gap-x-4 gap-y-3"),
+      actionButton("Test page speed", () => openSpeed(data.domain)),
+      actionButton("Check propagation", () => openPropagation(data.domain)),
+      el("p", "text-xs text-ink/50", relativeChecked(data))));
+  }
 }
 
 /* =====================================================================
@@ -845,9 +914,281 @@ function renderReport(data) {
   add(s,
     fullRow(renderRegistration(data.registration || {})),
     fullRow(renderDNS(data.dns)),
+    fullRow(renderNameservers(data.nameservers || {})),
     pairRow(renderSPF(data.spf, data.domain), renderDMARC(data.dmarc, data.domain)),
     pairRow(renderDKIM(data.dkim || {}, data.domain), renderMail(data.mail, data.providers)),
+    fullRow(renderMailSecurity(data.mail_security || {})),
     fullRow(renderTLS(data.tls)));
+}
+
+/* ---- Nameserver health ---- */
+function renderNameservers(n) {
+  const servers = n.servers || [];
+  const ok = servers.filter((s) => s.authoritative).length;
+  const verdict = !servers.length ? "No nameservers found"
+    : ok === servers.length ? `${servers.length} nameservers, all answering with authority`
+    : `${servers.length - ok} of ${servers.length} nameservers have a problem`;
+  const { wrap, body } = section("sec-ns", "Nameservers", n.status || "error", verdict);
+  add(body, findings(n));
+  if (!servers.length) return wrap;
+  const table = el("div", "overflow-x-auto");
+  const t = el("table", "w-full min-w-[34rem] text-left text-[14px]");
+  const head = add(el("tr", "border-b border-rule text-[13px] text-ink/60"),
+    ...["Nameserver", "State", "SOA serial", "Response"].map((h) => el("th", "py-2 pr-4 font-normal", h)));
+  const tbody = el("tbody");
+  servers.forEach((s) => {
+    const state = !s.reachable ? ["fail", "No answer"] : s.authoritative ? ["pass", "Authoritative"] : ["fail", "Not authoritative"];
+    const stateEl = el("span", `inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(state[0]).pill}`, state[1]);
+    if (s.error) stateEl.title = s.error;
+    add(tbody, add(el("tr", "border-b border-rule/60 last:border-0 align-top"),
+      add(el("td", "py-2.5 pr-4"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", s.host), el("div", "font-mono text-[12px] text-ink/60", s.ip || "no IPv4")),
+      add(el("td", "py-2.5 pr-4"), stateEl),
+      el("td", "tabular py-2.5 pr-4 font-mono text-[13px]", s.serial ?? "—"),
+      el("td", "tabular py-2.5 font-mono text-[13px]", s.rtt_ms != null ? `${s.rtt_ms} ms` : "—")));
+  });
+  add(t, add(el("thead"), head), tbody);
+  add(body, add(table, t));
+  if (n.zone) add(body, el("p", "text-[13px] text-ink/60", `Each server was asked directly for the SOA record of ${n.zone}.`));
+  return wrap;
+}
+
+/* ---- MTA-STS, TLS-RPT, BIMI ---- */
+function renderMailSecurity(m) {
+  const parts = [m.mta_sts, m.tls_rpt, m.bimi].filter((x) => x?.found).length;
+  const verdict = m.status === "error" ? "Couldn't be checked" : parts ? `${parts} of 3 set up` : "None set up (optional)";
+  const { wrap, body } = section("sec-mailsec", "MTA-STS, TLS reporting and BIMI", m.status || "error", verdict);
+  const grid = el("div", "grid gap-6 sm:grid-cols-3");
+  const block = (title, explain, found, rows) => add(el("div", "min-w-0 space-y-2"),
+    add(el("div", "flex items-center gap-2"), el("h4", "font-semibold text-navy", title),
+        el("span", `text-xs font-semibold ${found ? "text-pass" : "text-ink/50"}`, found ? "Set up" : "Not set up")),
+    el("p", "text-[13px] leading-snug text-ink/70", explain),
+    ...(found ? rows : []));
+  const kv = (k, v, mono = false) => add(el("div", "text-[13px]"), el("span", "text-ink/60", `${k}: `), el("span", `break-anywhere text-ink ${mono ? "font-mono" : ""}`, v));
+
+  const sts = m.mta_sts || {}, pol = sts.policy || {};
+  add(grid, block("MTA-STS", "Tells senders to deliver to you only over verified, encrypted connections.", sts.found, [
+    pol.mode ? kv("Mode", pol.mode, true) : null,
+    pol.max_age ? kv("Cached by senders for", `${Math.round(Number(pol.max_age) / 86400)} days`) : null,
+    pol.mx?.length ? kv("Allowed mail servers", pol.mx.join(", "), true) : null,
+  ].filter(Boolean)));
+  const rpt = m.tls_rpt || {};
+  add(grid, block("TLS reporting", "Daily reports about senders that couldn’t connect to you securely.", rpt.found, [
+    rpt.rua?.length ? kv("Reports go to", rpt.rua.join(", "), true) : null,
+  ].filter(Boolean)));
+  const bimi = m.bimi || {};
+  add(grid, block("BIMI", "Shows your brand logo next to your mail in supporting inboxes.", bimi.found, [
+    bimi.logo_url ? kv("Logo", bimi.logo_url, true) : null,
+    kv("Certificate (VMC)", bimi.certificate_url ? "Yes" : "No"),
+  ]));
+  add(body, grid, findings(m));
+  return wrap;
+}
+
+/* =====================================================================
+   PAGE SPEED
+   ===================================================================== */
+const scoreStatus = (s) => (s == null ? "info" : s >= 0.9 ? "pass" : s >= 0.5 ? "warn" : "fail");
+const FIELD_CATEGORY = { FAST: ["pass", "Good"], AVERAGE: ["warn", "Needs improvement"], SLOW: ["fail", "Poor"] };
+const COLOR_HEX = { pass: "#13795B", warn: "#A85A06", fail: "#C0261B", info: "#1679A8" };
+
+/** The score ring: the one large graphic on the speed page. */
+function scoreRing(score) {
+  const status = score == null ? "info" : scoreStatus(score / 100);
+  const r = 52, c = 2 * Math.PI * r, frac = score == null ? 0 : score / 100;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 128 128");
+  svg.setAttribute("class", "h-36 w-36 shrink-0");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", score == null ? "No performance score" : `Performance score ${score} out of 100`);
+  const track = document.createElementNS(ns, "circle");
+  Object.entries({ cx: 64, cy: 64, r, fill: "none", stroke: "#EEF1F7", "stroke-width": 10 }).forEach(([k, v]) => track.setAttribute(k, v));
+  const arc = document.createElementNS(ns, "circle");
+  Object.entries({ cx: 64, cy: 64, r, fill: "none", stroke: COLOR_HEX[status], "stroke-width": 10, "stroke-linecap": "round",
+    "stroke-dasharray": `${c * frac} ${c}`, transform: "rotate(-90 64 64)" }).forEach(([k, v]) => arc.setAttribute(k, v));
+  const text = document.createElementNS(ns, "text");
+  Object.entries({ x: 64, y: 64, "text-anchor": "middle", "dominant-baseline": "central", fill: COLOR_HEX[status],
+    "font-size": 38, "font-weight": 800, "font-family": "Archivo, sans-serif" }).forEach(([k, v]) => text.setAttribute(k, v));
+  text.textContent = score == null ? "—" : String(score);
+  svg.append(track, arc, text);
+  return svg;
+}
+
+function fmtField(f) {
+  if (f.p75 == null) return "—";
+  if (f.unit === "cls") return f.p75.toFixed(2);
+  return f.p75 >= 1000 ? `${(f.p75 / 1000).toFixed(1)} s` : `${f.p75} ms`;
+}
+
+function renderSpeed(r) {
+  const sheet = $("speed-sheet");
+  sheet.replaceChildren();
+  const top = el("div", "flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-10");
+  add(top, scoreRing(r.score), add(el("div", "min-w-0"),
+    el("p", "text-sm text-ink/60", `${r.strategy === "desktop" ? "Desktop" : "Mobile"} performance${r.sample ? ", sample data" : ""}`),
+    el("h2", "display mt-1 break-anywhere text-2xl font-extrabold leading-tight text-navy sm:text-3xl", r.final_url),
+    el("p", "mt-2 text-[15px] text-ink/75", r.score == null ? "Lighthouse couldn’t score this page."
+      : r.score >= 90 ? "Fast. This page loads well on the tested device."
+      : r.score >= 50 ? "Room to improve. Start with the fixes below."
+      : "Slow. Visitors on this device wait noticeably; the fixes below matter."),
+    r.runtime_error ? el("p", "mt-2 text-[14px] text-fail", r.runtime_error) : null));
+  add(sheet, top);
+
+  // Lab metrics
+  const lab = el("div", "grid grid-cols-2 gap-x-6 gap-y-5 border-t border-rule p-6 sm:grid-cols-5 sm:p-8");
+  (r.lab || []).forEach((m) => add(lab, add(el("div", "min-w-0"),
+    el("div", `tabular text-2xl font-bold ${st(scoreStatus(m.score)).text}`, m.display || "—"),
+    el("div", "mt-1 text-[13px] font-semibold text-navy", m.name),
+    el("div", "text-[12px] text-ink/60", `${m.id}, simulated test`))));
+  add(sheet, lab);
+
+  // Field data + fixes side by side
+  const lower = el("div", "grid border-t border-rule lg:grid-cols-2 lg:divide-x lg:divide-rule max-lg:[&>*+*]:border-t max-lg:[&>*+*]:border-rule");
+  const field = el("section", "min-w-0 space-y-4 p-6 sm:p-8");
+  add(field, el("h3", "semi-wide text-lg font-bold text-navy", "Real visitors"),
+    el("p", "-mt-3 text-[14px] text-ink/70", r.field?.length
+      ? `Chrome users over the last 28 days, ${r.field_scope === "origin" ? "across the whole site (this page alone has too little traffic)" : "on this page"}. Values are the 75th percentile.`
+      : "The Chrome UX Report doesn’t have enough traffic data for this site yet. Popular sites usually do."));
+  (r.field || []).forEach((f) => {
+    const [status, word] = FIELD_CATEGORY[f.category] || ["info", f.category || "Unknown"];
+    add(field, row(`${f.name} (${f.id})`, add(el("div", "flex flex-wrap items-center gap-x-3"),
+      el("span", "tabular font-mono text-[13px]", fmtField(f)),
+      el("span", `rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(status).pill}`, word))));
+  });
+  const fixes = el("section", "min-w-0 space-y-4 p-6 sm:p-8");
+  add(fixes, el("h3", "semi-wide text-lg font-bold text-navy", "What to fix first"));
+  if (!r.opportunities?.length) add(fixes, el("p", "text-[14px] text-ink/70", "No fix would save more than a tenth of a second. Nice."));
+  const list = el("ol", "space-y-3");
+  (r.opportunities || []).forEach((o) => add(list, add(el("li", "rounded-lg bg-canvas px-4 py-3"),
+    add(el("div", "flex flex-wrap items-baseline justify-between gap-x-3"),
+        el("span", "font-semibold text-navy", o.title),
+        el("span", "tabular text-[13px] font-semibold text-warn", `saves about ${(o.savings_ms / 1000).toFixed(1)} s`)),
+    o.description ? el("p", "mt-1 text-[13px] leading-snug text-ink/70", o.description) : null)));
+  add(fixes, list);
+  add(sheet, add(lower, field, fixes));
+
+  // Diagnostics + screenshot
+  const d = r.diagnostics || {};
+  const bottom = el("div", "grid gap-8 border-t border-rule p-6 sm:p-8 lg:grid-cols-[1fr_auto]");
+  const diag = add(el("div", "min-w-0"),
+    el("h3", "semi-wide mb-2 text-lg font-bold text-navy", "Page details"),
+    row("Server response", d.server_response_ms != null ? `${Math.round(d.server_response_ms)} ms` : "—"),
+    row("Page weight", d.total_bytes != null ? `${(d.total_bytes / 1048576).toFixed(2)} MB` : "—"),
+    row("Requests", d.requests ?? "—"),
+    row("Page elements (DOM)", d.dom_size != null ? Math.round(d.dom_size) : "—"),
+    row("Tested with", `Lighthouse ${r.lighthouse_version || ""}${r.fetched_at ? `, ${new Date(r.fetched_at).toUTCString()}` : ""}`));
+  add(bottom, diag);
+  if (r.screenshot) {
+    const img = el("img", "max-h-80 w-auto max-w-full rounded-lg border border-rule");
+    img.src = r.screenshot; img.alt = "How the page looked when the test finished";
+    add(bottom, add(el("figure", "min-w-0"), img, el("figcaption", "mt-2 text-[12px] text-ink/60", "At the end of the test")));
+  }
+  add(sheet, bottom);
+}
+
+let speedTimer = null;
+async function runSpeed(raw) {
+  const url = raw.trim();
+  if (!url) return;
+  const strategy = document.querySelector('input[name="speed-strategy"]:checked').value;
+  $("speed-error").classList.add("hidden");
+  $("speed-btn").disabled = true;
+  $("speed-btn").textContent = "Testing…";
+  const sheet = $("speed-sheet");
+  const started = Date.now();
+  const status = el("p", "mt-2 text-[15px] text-ink/70", "");
+  sheet.replaceChildren(add(el("div", "flex items-center gap-6 p-6 sm:p-10"),
+    add(el("div", "h-36 w-36 shrink-0 animate-pulse rounded-full border-[10px] border-canvas")),
+    add(el("div"), el("h2", "semi-wide text-xl font-bold text-navy", `Testing on a simulated ${strategy === "desktop" ? "desktop" : "phone"}…`), status)));
+  const tick = () => { status.textContent = `Google is loading and measuring the page. ${Math.round((Date.now() - started) / 1000)} s so far; most tests finish within 40 s.`; };
+  tick(); clearInterval(speedTimer); speedTimer = setInterval(tick, 1000);
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/speed?url=${encodeURIComponent(url)}&strategy=${strategy}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The speed test failed (HTTP ${res.status}).`);
+    renderSpeed(data);
+  } catch (err) {
+    sheet.replaceChildren(el("p", "p-6 text-ink/60 sm:p-10", "Enter a page address above to run a test."));
+    const box = $("speed-error");
+    box.textContent = err.name === "TimeoutError" ? "The test took longer than a minute and was stopped. Try again." :
+      err instanceof TypeError ? "Couldn't reach the VdigDNS service. Check your connection and try again." : err.message;
+    box.classList.remove("hidden");
+  } finally {
+    clearInterval(speedTimer);
+    $("speed-btn").disabled = false;
+    $("speed-btn").textContent = "Run speed test";
+  }
+}
+
+/* =====================================================================
+   PROPAGATION
+   ===================================================================== */
+function renderPropagation(p) {
+  const sheet = $("prop-sheet");
+  sheet.replaceChildren();
+  const head = el("div", "p-6 sm:p-10");
+  add(head,
+    add(el("div", "flex flex-wrap items-center gap-3"),
+      el("h2", "display break-anywhere text-3xl font-extrabold leading-tight text-navy sm:text-4xl", p.domain),
+      el("span", "rounded-md bg-canvas px-2 py-1 font-mono text-sm font-semibold text-blue", p.type),
+      pill(p.status)),
+    el("p", "mt-3 max-w-3xl text-[15px] text-navy", p.summary));
+  add(sheet, head);
+
+  const wrap = el("div", "overflow-x-auto border-t border-rule px-6 pb-6 sm:px-10 sm:pb-8");
+  const t = el("table", "w-full min-w-[40rem] text-left text-[14px]");
+  add(t, add(el("thead"), add(el("tr", "border-b border-rule text-[13px] text-ink/60"),
+    ...["Resolver", "Answer", "TTL", "Time", ""].map((h) => el("th", "py-3 pr-4 font-normal", h)))));
+  const tbody = el("tbody");
+  const addRow = (r, isAuth) => {
+    const answer = r.error ? el("span", "text-fail", r.error)
+      : r.rcode !== "NOERROR" ? el("span", "font-mono text-warn", r.rcode)
+      : r.values.length ? add(el("div", "space-y-0.5"), ...r.values.map((v) => el("div", "break-anywhere font-mono text-[13px]", v)))
+      : el("span", "text-ink/50", "No records");
+    const match = isAuth ? el("span", "text-xs font-semibold text-blue", "Source")
+      : r.matches === true ? el("span", "text-xs font-semibold text-pass", "Matches")
+      : r.matches === false ? el("span", "text-xs font-semibold text-warn", "Different")
+      : el("span", "text-xs font-semibold text-ink/50", "No answer");
+    add(tbody, add(el("tr", `border-b border-rule/60 align-top last:border-0 ${isAuth ? "bg-sky/5" : ""}`),
+      add(el("td", "py-3 pr-4"), el("div", "break-anywhere font-semibold text-navy", r.name), el("div", "text-[12px] text-ink/60", isAuth ? "Your authoritative nameserver" : `${r.location}, ${r.ip}`)),
+      add(el("td", "min-w-0 py-3 pr-4"), answer),
+      el("td", "tabular py-3 pr-4 font-mono text-[13px]", r.ttl != null ? `${r.ttl} s` : "—"),
+      el("td", "tabular py-3 pr-4 font-mono text-[13px]", r.rtt_ms != null ? `${r.rtt_ms} ms` : "—"),
+      add(el("td", "py-3"), match)));
+  };
+  if (p.authoritative) addRow(p.authoritative, true);
+  (p.resolvers || []).forEach((r) => addRow(r, false));
+  add(t, tbody);
+  add(sheet, add(wrap, t));
+  add(sheet, add(el("div", "flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-rule px-6 py-5 sm:px-10"),
+    actionButton("Check again", () => runPropagation(p.domain, p.type)),
+    el("p", "text-[13px] text-ink/60", `${p.note} Results can be up to 30 seconds old.`)));
+}
+
+async function runPropagation(domain, type) {
+  domain = domain.trim();
+  if (!domain) return;
+  $("prop-domain").value = domain;
+  $("prop-type").value = type;
+  $("prop-error").classList.add("hidden");
+  $("prop-btn").disabled = true;
+  $("prop-btn").textContent = "Checking…";
+  $("prop-sheet").replaceChildren(el("p", "animate-pulse p-6 text-lg text-ink/60 sm:p-10", `Asking eight resolvers for the ${type} record of ${domain}…`));
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/propagation?domain=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`, { signal: AbortSignal.timeout(30000) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}).`);
+    renderPropagation(data);
+  } catch (err) {
+    $("prop-sheet").replaceChildren(el("p", "p-6 text-ink/60 sm:p-10", "Enter a domain above to compare resolvers."));
+    const box = $("prop-error");
+    box.textContent = err.name === "TimeoutError" ? "The resolvers took too long to answer. Try again." :
+      err instanceof TypeError ? "Couldn't reach the VdigDNS service. Check your connection and try again." : err.message;
+    box.classList.remove("hidden");
+  } finally {
+    $("prop-btn").disabled = false;
+    $("prop-btn").textContent = "Check";
+  }
 }
 
 /* =====================================================================
@@ -1055,9 +1396,9 @@ function loadDmarc(domain, record) {
 /* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", spf: "#spf-builder", dmarc: "#dmarc-builder" };
+const VIEWS = { report: "", speed: "#speed", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder" };
 function showView(name) {
-  ["report", "spf", "dmarc"].forEach((v) => {
+  ["report", "speed", "prop", "spf", "dmarc"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -1070,7 +1411,7 @@ function showView(name) {
   if (name === "spf") updateSpf();
 }
 function viewFromHash() {
-  return location.hash === VIEWS.spf ? "spf" : location.hash === VIEWS.dmarc ? "dmarc" : "report";
+  return Object.keys(VIEWS).find((k) => VIEWS[k] && VIEWS[k] === location.hash) || "report";
 }
 window.addEventListener("hashchange", () => { showView(viewFromHash()); window.scrollTo(0, 0); });
 document.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click", (e) => {
@@ -1081,6 +1422,15 @@ document.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click
   window.scrollTo(0, 0);
 }));
 
+function openSpeed(domain) {
+  $("speed-url").value = `https://${domain}`;
+  history.pushState(null, "", VIEWS.speed); showView("speed"); window.scrollTo(0, 0);
+  $("speed-url").focus();
+}
+function openPropagation(domain) {
+  history.pushState(null, "", VIEWS.prop); showView("prop"); window.scrollTo(0, 0);
+  runPropagation(domain, "A");
+}
 function openSpfBuilder(domain, record) {
   loadSpf(domain, record || "v=spf1 ~all");
   history.pushState(null, "", VIEWS.spf); showView("spf"); window.scrollTo(0, 0);
@@ -1104,6 +1454,17 @@ const SAMPLE = {
     ], errors: [], warnings: [], notes: [],
   },
   providers: { inbound: ["Google Workspace"], senders: ["SendGrid"] },
+  nameservers: { status: "warn", zone: "northwind.example", errors: [], notes: [],
+    warnings: ["SOA serials differ (ns1.dnshost.example = 2026110401, ns2.dnshost.example = 2026110301). Some nameservers haven't picked up the latest zone changes yet."],
+    servers: [
+      { host: "ns1.dnshost.example", ip: "198.51.100.53", reachable: true, authoritative: true, serial: 2026110401, rtt_ms: 18 },
+      { host: "ns2.dnshost.example", ip: "203.0.113.53", reachable: true, authoritative: true, serial: 2026110301, rtt_ms: 74 },
+    ] },
+  mail_security: { status: "pass", errors: [], warnings: [],
+    notes: ["MTA-STS is in testing mode: failures are reported but mail is still delivered. Switch to enforce once TLS reports look clean."],
+    mta_sts: { found: true, policy: { mode: "testing", max_age: "604800", mx: ["aspmx.l.google.com", "*.aspmx.l.google.com"] } },
+    tls_rpt: { found: true, rua: ["mailto:tls-reports@northwind.example"] },
+    bimi: { found: false } },
   registration: {
     status: "pass", found: true, domain: "northwind.example", source: "RDAP", server: "https://rdap.registry.example/",
     registrar: "Example Registrar, Inc.", registrar_iana_id: "9999", abuse_email: "abuse@registrar.example",
@@ -1144,6 +1505,42 @@ const SAMPLE = {
     not_before: "2026-09-12T00:00:00+00:00", not_after: "2026-12-11T00:00:00+00:00", days_remaining: 37,
     sans: ["northwind.example", "www.northwind.example"], tls_version: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384", errors: [], warnings: [],
     caa: { found: true, found_at: "northwind.example", issuers: ["letsencrypt.org"], wildcard_issuers: [], iodef: ["mailto:security@northwind.example"] } },
+};
+
+// Samples for the speed and propagation tabs (shown only in the design preview)
+const SAMPLE_SPEED = {
+  sample: true, strategy: "mobile", final_url: "https://northwind.example/", score: 73,
+  lab: [
+    { id: "LCP", name: "Largest Contentful Paint", display: "3.1 s", score: 0.6 },
+    { id: "TBT", name: "Total Blocking Time", display: "350 ms", score: 0.7 },
+    { id: "CLS", name: "Cumulative Layout Shift", display: "0.02", score: 1 },
+    { id: "FCP", name: "First Contentful Paint", display: "1.5 s", score: 0.9 },
+    { id: "SI", name: "Speed Index", display: "2.8 s", score: 0.8 },
+  ],
+  field_scope: "origin",
+  field: [
+    { id: "LCP", name: "Largest Contentful Paint", p75: 2600, unit: "ms", category: "AVERAGE" },
+    { id: "INP", name: "Interaction to Next Paint", p75: 180, unit: "ms", category: "FAST" },
+    { id: "CLS", name: "Cumulative Layout Shift", p75: 0.05, unit: "cls", category: "FAST" },
+  ],
+  opportunities: [
+    { title: "Eliminate render-blocking resources", savings_ms: 900, description: "Stylesheets and scripts are delaying the first paint. Inline critical CSS and defer the rest." },
+    { title: "Serve images in next-gen formats", savings_ms: 450, description: "WebP and AVIF images are much smaller than PNG or JPEG at the same quality." },
+  ],
+  diagnostics: { server_response_ms: 420, total_bytes: 1843200, requests: 57, dom_size: 812 },
+  lighthouse_version: "12.3.0", fetched_at: "2026-11-04T06:00:00Z", screenshot: null,
+};
+const SAMPLE_PROP = {
+  domain: "www.northwind.example", type: "A", status: "warn",
+  summary: "1 of 8 resolvers show a different answer. They're still serving a cached older record; this clears as their copies expire (see TTL).",
+  note: "Anycast resolvers answer from their site nearest to our server, so this shows how the change looks from that region.",
+  authoritative: { name: "ns1.dnshost.example", ip: "198.51.100.53", location: "Authoritative", values: ["203.0.113.24"], ttl: 300, rcode: "NOERROR", rtt_ms: 18, matches: true },
+  resolvers: [
+    ["Cloudflare", "1.1.1.1", "Anycast", 12], ["Google", "8.8.8.8", "Anycast", 15], ["Quad9", "9.9.9.9", "Anycast", 21],
+    ["OpenDNS", "208.67.222.222", "Anycast", 19], ["AdGuard", "94.140.14.14", "Anycast", 33], ["Control D", "76.76.2.0", "Anycast", 25],
+    ["Lumen (Level 3)", "4.2.2.1", "United States", 28],
+  ].map(([name, ip, location, rtt]) => ({ name, ip, location, values: ["203.0.113.24"], ttl: 287, rcode: "NOERROR", rtt_ms: rtt, matches: true }))
+   .concat([{ name: "DNS.Watch", ip: "84.200.69.80", location: "Germany", values: ["198.51.100.7"], ttl: 2140, rcode: "NOERROR", rtt_ms: 96, matches: false }]),
 };
 
 /* =====================================================================
@@ -1203,6 +1600,8 @@ function run(domain) {
    Wire everything up
    ===================================================================== */
 buildProviderChoices();
+$("speed-form").addEventListener("submit", (e) => { e.preventDefault(); runSpeed($("speed-url").value); });
+$("prop-form").addEventListener("submit", (e) => { e.preventDefault(); runPropagation($("prop-domain").value, $("prop-type").value); });
 $("spf-form").addEventListener("input", updateSpf);
 $("spf-form").addEventListener("submit", (e) => e.preventDefault());
 $("spf-copy").addEventListener("click", () => copyText($("spf-output").textContent, $("spf-copy"), $("spf-output")));
@@ -1227,6 +1626,8 @@ showView(viewFromHash());
 const params = new URLSearchParams(location.search);
 if (params.get("domain")) { $("domain-input").value = params.get("domain"); if (viewFromHash() === "report") analyze(params.get("domain")); }
 else if (params.has("sample") || window.DIGDNS_SAMPLE) renderReport(SAMPLE);
+// The design preview also fills the speed and propagation tabs with sample results.
+if (window.DIGDNS_SAMPLE) { renderSpeed(SAMPLE_SPEED); renderPropagation(SAMPLE_PROP); }
 </script>
 </body>
 </html>
