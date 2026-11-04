@@ -568,6 +568,112 @@ async def check_rdns(ip: str) -> dict:
     return out
 
 
+# ---- 3d-2. Hosting: who serves the website (PTR + IP owner) -----------------------------------------
+# Reverse DNS alone often can't name "the server": CDN IPs (Cloudflare, Vercel...)
+# rarely have a useful PTR, and shared hosting PTRs name the shared box. So we
+# also ask Team Cymru's free IP-to-ASN service (plain DNS TXT queries) who owns
+# the IP. Together that gives an honest "hosted on / hosted by" answer.
+
+# Well-known networks, by AS number. cdn=True means the visible IP is an edge
+# proxy and the real origin server is hidden behind it.
+KNOWN_NETWORKS: dict[int, tuple[str, bool]] = {
+    13335: ("Cloudflare", True), 209242: ("Cloudflare", True),
+    54113: ("Fastly", True),
+    20940: ("Akamai", True), 16625: ("Akamai", True),
+    16509: ("Amazon Web Services", False), 14618: ("Amazon Web Services", False),
+    15169: ("Google Cloud", False), 396982: ("Google Cloud", False),
+    8075: ("Microsoft Azure", False),
+    14061: ("DigitalOcean", False),
+    24940: ("Hetzner", False),
+    16276: ("OVHcloud", False),
+    63949: ("Akamai Cloud (Linode)", False),
+    20473: ("Vultr", False),
+}
+
+
+async def lookup_ip_owner(ip: str) -> dict | None:
+    """
+    Ask Team Cymru which network announces this IP.
+      1.2.3.4  ->  TXT 4.3.2.1.origin.asn.cymru.com  -> "13335 | 104.16.0.0/13 | US | arin | 2010-07-14"
+      AS13335  ->  TXT AS13335.asn.cymru.com          -> "13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US"
+    """
+    rev = dns.reversename.from_address(ip).to_text(omit_final_dot=True)
+    if rev.endswith(".in-addr.arpa"):
+        query = rev[: -len(".in-addr.arpa")] + ".origin.asn.cymru.com"
+    else:
+        query = rev[: -len(".ip6.arpa")] + ".origin6.asn.cymru.com"
+    try:
+        txt = await get_txt(query)
+        if not txt:
+            return None
+        parts = [p.strip() for p in txt[0].split("|")]
+        asn = int(parts[0].split()[0])  # an IP can have several origin ASNs; take the first
+        owner: dict[str, Any] = {"asn": asn, "prefix": parts[1] if len(parts) > 1 else None,
+                                 "country": parts[2] if len(parts) > 2 else None, "as_name": None}
+        name_txt = await get_txt(f"AS{asn}.asn.cymru.com")
+        if name_txt:
+            raw_name = name_txt[0].split("|")[-1].strip()           # "CLOUDFLARENET, US"
+            owner["as_name"] = re.sub(r",\s*[A-Z]{2}$", "", raw_name)  # -> "CLOUDFLARENET"
+        known = KNOWN_NETWORKS.get(asn)
+        owner["provider"] = known[0] if known else None
+        owner["cdn"] = known[1] if known else False
+        return owner
+    except (DNSLookupError, ValueError, IndexError):
+        return None
+
+
+async def _describe_ip(ip: str) -> dict:
+    rdns, owner = await asyncio.gather(check_rdns(ip), lookup_ip_owner(ip))
+    return {**rdns, "owner": owner}
+
+
+async def analyze_hosting(domain: str) -> dict:
+    """Where does the website live? PTR + owner for up to 3 IPv4 and 1 IPv6 addresses."""
+    res: dict[str, Any] = {"status": "info", "ips": [], "headline": None, "detail": None,
+                           "errors": [], "warnings": [], "notes": []}
+    v4, v6 = [], []
+    for rtype, bucket in (("A", v4), ("AAAA", v6)):
+        try:
+            bucket += [r.address for r in await resolve(domain, rtype)]
+        except DNSLookupError as exc:
+            res["warnings"].append(str(exc))
+    targets = [ip for ip in v4[:3] + v6[:1] if is_public_ip(ip)]
+    if not targets:
+        res["headline"] = "No website address"
+        res["detail"] = "This domain has no public A or AAAA record, so it isn't serving a website."
+        return res
+
+    res["ips"] = list(await asyncio.gather(*(_describe_ip(ip) for ip in targets)))
+
+    first = res["ips"][0]
+    owner = first.get("owner") or {}
+    network = owner.get("provider") or owner.get("as_name")
+    network_txt = f"{network} (AS{owner['asn']})" if network and owner.get("asn") else None
+
+    if owner.get("cdn"):
+        res["headline"] = f"Behind {owner['provider']}"
+        res["detail"] = (f"{first['ip']} is a {owner['provider']} edge address. The real origin server is "
+                         "hidden behind the CDN, so its name can't be read from DNS.")
+    elif first["ptr"] and first["forward_confirmed"]:
+        res["headline"] = f"Hosted on {first['matched_host']}"
+        res["detail"] = f"{first['ip']} reverse-resolves to {first['matched_host']}" + (f", on {network_txt}." if network_txt else ".")
+    elif first["ptr"]:
+        res["headline"] = f"Hosted on {first['ptr'][0]}"
+        res["detail"] = (f"{first['ip']} has PTR {first['ptr'][0]}, but that name doesn't resolve back to the IP, "
+                         "so it may be a generic provider name" + (f". Network: {network_txt}." if network_txt else "."))
+    elif network_txt:
+        res["headline"] = f"Hosted by {network}"
+        res["detail"] = f"{first['ip']} has no reverse DNS (PTR). The address belongs to {network_txt}."
+    else:
+        res["headline"] = f"Hosted at {first['ip']}"
+        res["detail"] = "No reverse DNS and no network owner information was found for this address."
+
+    providers = {(i.get("owner") or {}).get("asn") for i in res["ips"] if i.get("owner")}
+    if len(providers) > 1:
+        res["notes"].append("This domain's addresses belong to more than one network (multi-provider or load-balanced).")
+    return res
+
+
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
 def _decode(msg: Any) -> str:
     return msg.decode("utf-8", errors="replace") if isinstance(msg, bytes) else str(msg)
@@ -916,8 +1022,9 @@ async def analyze(domain: str = Query(..., min_length=1, max_length=300, descrip
     log.info("Analysing %s", clean)
 
     # All five sections run concurrently; total time ≈ the slowest one (usually SMTP).
-    dns_res, spf_res, dmarc_res, mail_res, tls_res = await asyncio.gather(
+    dns_res, hosting_res, spf_res, dmarc_res, mail_res, tls_res = await asyncio.gather(
         _safe("DNS", lookup_dns_records(clean), 15),
+        _safe("Hosting", analyze_hosting(clean), 15),
         _safe("SPF", analyze_spf(clean), 20),
         _safe("DMARC", analyze_dmarc(clean), 15),
         _safe("Mail/SMTP", analyze_mail(clean), 45),
@@ -930,6 +1037,7 @@ async def analyze(domain: str = Query(..., min_length=1, max_length=300, descrip
         "duration_ms": int((time.monotonic() - started) * 1000),
         "cached": False,
         "dns": dns_res,
+        "hosting": hosting_res,
         "spf": spf_res,
         "dmarc": dmarc_res,
         "mail": mail_res,
