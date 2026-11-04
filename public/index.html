@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DigDNS — DNS & Mail Diagnostics</title>
+  <meta name="description" content="Open-source DNS, SPF, DMARC, SMTP and SSL diagnostics for sysadmins." />
+  <!-- Tailwind CSS v4 browser build: scans the page (including elements JS adds later) and generates CSS -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    /* Small things Tailwind classes don't cover */
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .break-anywhere { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
+
+  <!-- ================= HEADER + SEARCH ================= -->
+  <header class="border-b border-slate-800 bg-slate-900/60">
+    <div class="mx-auto max-w-6xl px-4 py-10">
+      <h1 class="text-3xl font-bold tracking-tight text-white">Dig<span class="text-emerald-400">DNS</span></h1>
+      <p class="mt-1 text-slate-400">DNS records, SPF, DMARC, reverse DNS, SMTP handshake and SSL — in one check.</p>
+
+      <form id="search-form" class="mt-6 flex flex-col gap-3 sm:flex-row" autocomplete="off">
+        <label for="domain-input" class="sr-only">Domain</label>
+        <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false"
+               placeholder="example.com" required maxlength="253"
+               class="mono flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white placeholder-slate-600 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30" />
+        <button id="search-btn" type="submit"
+                class="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60">
+          <!-- Spinner: hidden until a request is running -->
+          <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
+            <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+          </svg>
+          <span id="btn-label">Analyze</span>
+        </button>
+      </form>
+      <p id="status-line" class="mt-3 min-h-5 text-sm text-slate-400" aria-live="polite"></p>
+    </div>
+  </header>
+
+  <!-- ================= RESULTS ================= -->
+  <main class="mx-auto max-w-6xl px-4 py-8">
+    <!-- Error banner -->
+    <div id="error-box" class="hidden rounded-lg border border-red-800 bg-red-950/50 p-4 text-red-200"></div>
+
+    <!-- Summary pills (one per section) -->
+    <section id="summary" class="hidden mb-6 grid grid-cols-2 gap-3 md:grid-cols-5"></section>
+
+    <!-- Cards get injected here -->
+    <section id="results" class="grid gap-6 lg:grid-cols-2"></section>
+
+    <!-- Empty state -->
+    <div id="empty-state" class="py-16 text-center text-slate-500">
+      Enter a domain above to run a full diagnostic.
+    </div>
+  </main>
+
+  <footer class="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-600">
+    Open source · runs on Vercel · nothing you enter is stored.
+  </footer>
+
+<script>
+/* =====================================================================
+   CONFIG — change this to your API's public URL (no trailing slash)
+   ===================================================================== */
+// Empty string = same domain as this page (Vercel serves both). Nothing to change.
+// Only set this if you host the page somewhere else, e.g. "https://digdns.sujaiprojects.stream".
+const API_BASE = "";
+const REQUEST_TIMEOUT_MS = 65000; // a bit longer than the function's 60 s maxDuration (vercel.json)
+
+/* =====================================================================
+   DOM helpers
+   SECURITY NOTE: DNS records (TXT especially) are controlled by whoever
+   owns the domain being checked. We ALWAYS insert them with textContent,
+   never innerHTML, so a malicious TXT record can't inject scripts.
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+
+/** Create an element with classes and (safe) text content. */
+function el(tag, className = "", text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+/** Append several children at once, skipping null/undefined. */
+function add(parent, ...children) {
+  children.flat().forEach((c) => c && parent.appendChild(c));
+  return parent;
+}
+
+// Colours for each status the API can return
+const STATUS_STYLE = {
+  pass:  { label: "PASS",  cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30" },
+  warn:  { label: "WARN",  cls: "bg-amber-500/15 text-amber-300 ring-amber-500/30" },
+  fail:  { label: "FAIL",  cls: "bg-red-500/15 text-red-300 ring-red-500/30" },
+  error: { label: "ERROR", cls: "bg-red-500/15 text-red-300 ring-red-500/30" },
+  info:  { label: "INFO",  cls: "bg-sky-500/15 text-sky-300 ring-sky-500/30" },
+};
+
+function badge(status) {
+  const s = STATUS_STYLE[status] || STATUS_STYLE.info;
+  return el("span", `inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ring-1 ${s.cls}`, s.label);
+}
+
+/** A results card with a title, a status badge and a body you fill in. */
+function card(title, status) {
+  const wrap = el("article", "rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-sm");
+  const head = add(el("div", "mb-4 flex items-center justify-between gap-3"),
+                   el("h2", "text-lg font-semibold text-white", title),
+                   status ? badge(status) : null);
+  const body = el("div", "space-y-4 text-sm");
+  add(wrap, head, body);
+  return { wrap, body };
+}
+
+/** A label/value row; value may be text or an element. */
+function row(label, value, mono = false) {
+  const r = el("div", "grid grid-cols-3 gap-2 border-b border-slate-800/70 py-1.5 last:border-0");
+  add(r, el("div", "text-slate-400", label));
+  const v = value instanceof Node ? value : el("div", "", value ?? "—");
+  v.className += ` col-span-2 break-anywhere ${mono ? "mono text-slate-100" : "text-slate-100"}`;
+  return add(r, v);
+}
+
+/** Red error list + amber warning list for a section. */
+function findings(section) {
+  const box = el("div", "space-y-1.5");
+  (section.errors || []).forEach((t) =>
+    add(box, add(el("div", "flex gap-2 rounded-md bg-red-950/40 px-3 py-2 text-red-200"), el("span", "font-bold", "✕"), el("span", "break-anywhere", t))));
+  (section.warnings || []).forEach((t) =>
+    add(box, add(el("div", "flex gap-2 rounded-md bg-amber-950/40 px-3 py-2 text-amber-200"), el("span", "font-bold", "!"), el("span", "break-anywhere", t))));
+  (section.notes || []).forEach((t) =>
+    add(box, add(el("div", "flex gap-2 rounded-md bg-sky-950/40 px-3 py-2 text-sky-200"), el("span", "font-bold", "i"), el("span", "break-anywhere", t))));
+  return box.childElementCount ? box : null;
+}
+
+function subheading(text) {
+  return el("h3", "text-xs font-semibold uppercase tracking-wider text-slate-500", text);
+}
+
+function codeBlock(text) {
+  return el("pre", "mono whitespace-pre-wrap break-anywhere rounded-md bg-slate-950 p-3 text-xs text-emerald-200", text);
+}
+
+/* =====================================================================
+   Section renderers — each takes one part of the API JSON and builds a card
+   ===================================================================== */
+
+function renderSummary(data) {
+  const box = $("summary");
+  box.replaceChildren();
+  const items = [
+    ["DNS", data.dns?.status], ["SPF", data.spf?.status], ["DMARC", data.dmarc?.status],
+    ["MX / rDNS", data.mail?.status], ["SSL / TLS", data.tls?.status],
+  ];
+  items.forEach(([name, status]) => {
+    add(box, add(el("div", "flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900 px-4 py-3"),
+                 el("span", "font-medium text-slate-300", name), badge(status)));
+  });
+  box.classList.remove("hidden");
+}
+
+/** Turn one DNS record value (string or object) into display text. */
+function recordText(type, r) {
+  if (typeof r === "string") return r;
+  switch (type) {
+    case "MX":  return `${r.preference}  ${r.exchange}`;
+    case "SOA": return `${r.mname}  ${r.rname}  serial=${r.serial} refresh=${r.refresh} retry=${r.retry} expire=${r.expire} min=${r.minimum}`;
+    case "SRV": return `${r.name}  →  ${r.priority} ${r.weight} ${r.port} ${r.target}`;
+    default:    return JSON.stringify(r);
+  }
+}
+
+function renderDNS(dns) {
+  const { wrap, body } = card("DNS Records", dns.status);
+  add(body, findings(dns));
+  const table = el("div", "divide-y divide-slate-800 rounded-lg border border-slate-800");
+  Object.entries(dns.records || {}).forEach(([type, info]) => {
+    const r = el("div", "grid grid-cols-[4.5rem_1fr] gap-3 px-3 py-2");
+    add(r, el("div", "mono font-semibold text-emerald-400", type));
+    const values = el("div", "space-y-1");
+    if (info.error) add(values, el("div", "text-red-300", info.error));
+    else if (!info.records.length) add(values, el("div", "text-slate-600", "— none —"));
+    info.records.forEach((rec) => add(values, el("div", "mono break-anywhere text-xs text-slate-100", recordText(type, rec))));
+    add(table, add(r, values));
+  });
+  add(body, table);
+  return wrap;
+}
+
+function renderEmailAuth(spf, dmarc) {
+  const worst = [spf.status, dmarc.status].includes("fail") || [spf.status, dmarc.status].includes("error") ? "fail"
+              : [spf.status, dmarc.status].includes("warn") ? "warn" : "pass";
+  const { wrap, body } = card("Email Authentication", worst);
+
+  // ---- SPF ----
+  add(body, add(el("div", "flex items-center gap-2"), subheading("SPF"), badge(spf.status)));
+  if (spf.record) add(body, codeBlock(spf.record));
+  if (spf.found) {
+    // Lookup meter: x / 10
+    const pct = Math.min(100, (spf.lookup_count / spf.lookup_limit) * 100);
+    const color = spf.lookup_count > spf.lookup_limit ? "bg-red-500" : spf.lookup_count >= 8 ? "bg-amber-500" : "bg-emerald-500";
+    const meter = add(el("div", "space-y-1"),
+      add(el("div", "flex justify-between text-xs text-slate-400"),
+          el("span", "", "DNS lookups"), el("span", "mono", `${spf.lookup_count} / ${spf.lookup_limit}`)),
+      add(el("div", "h-2 w-full overflow-hidden rounded bg-slate-800"), Object.assign(el("div", `h-full ${color}`), { style: `width:${pct}%` })));
+    add(body, meter,
+        row("Ends with", spf.all_qualifier ? `${spf.all_qualifier}all` : "(no all)", true),
+        row("Void lookups", String(spf.void_lookups)));
+    if (spf.includes?.length) {
+      const list = el("div", "space-y-1");
+      spf.includes.forEach((inc) =>
+        add(list, el("div", "mono text-xs text-slate-300", `${"  ".repeat(inc.depth - 1)}↳ ${inc.via}:${inc.domain}${inc.record ? "" : "  (no SPF!)"}`)));
+      add(body, subheading("Include tree"), list);
+    }
+  }
+  add(body, findings(spf));
+
+  // ---- DMARC ----
+  add(body, el("hr", "border-slate-800"));
+  add(body, add(el("div", "flex items-center gap-2"), subheading("DMARC"), badge(dmarc.status)));
+  if (dmarc.record) add(body, codeBlock(dmarc.record));
+  if (dmarc.found) {
+    add(body,
+      row("Policy (p)", dmarc.policy || "invalid", true),
+      row("Subdomain policy (sp)", dmarc.subdomain_policy || `inherits (${dmarc.policy || "?"})`, true),
+      row("Percentage (pct)", `${dmarc.pct}%`),
+      row("Alignment", `DKIM: ${dmarc.adkim === "s" ? "strict" : "relaxed"}, SPF: ${dmarc.aspf === "s" ? "strict" : "relaxed"}`),
+      row("Aggregate reports (rua)", dmarc.rua.join(", ") || "none", true),
+      row("Forensic reports (ruf)", dmarc.ruf.join(", ") || "none", true));
+  }
+  add(body, findings(dmarc));
+  return wrap;
+}
+
+function renderMail(mail) {
+  const { wrap, body } = card("MX & Reverse DNS", mail.status);
+  add(body, findings(mail));
+
+  if (mail.mx?.length) {
+    add(body, subheading("MX hosts (by priority)"));
+    mail.mx.forEach((m) =>
+      add(body, row(`Pref ${m.preference}`, `${m.host}${m.ips?.length ? "  →  " + m.ips.join(", ") : ""}`, true)));
+  }
+  if (mail.rdns?.length) {
+    add(body, subheading("Reverse DNS (PTR → forward-confirmed)"));
+    mail.rdns.forEach((r) => {
+      const v = el("div", "flex flex-wrap items-center gap-2");
+      add(v, el("span", "mono", r.ptr.length ? r.ptr.join(", ") : "no PTR"),
+             badge(r.forward_confirmed ? "pass" : "fail"));
+      add(body, row(r.ip, v, true));
+    });
+  }
+  return wrap;
+}
+
+function renderSMTP(mail) {
+  const smtp = mail.smtp;
+  let status = "info";
+  if (smtp?.disabled) status = "info";
+  else if (smtp) status = smtp.accepts_mail === true ? "pass" : smtp.accepts_mail === false ? "fail" : "warn";
+  const { wrap, body } = card("SMTP Handshake (port 25)", smtp ? status : (mail.null_mx ? "info" : mail.status));
+
+  if (!smtp) {
+    add(body, el("p", "text-slate-400", mail.null_mx ? "Domain accepts no mail (null MX) — handshake skipped." : "Handshake not run — see MX card."));
+    return wrap;
+  }
+  if (smtp.disabled) {
+    // Deployment can't reach port 25 (Vercel). Say so plainly instead of showing a fake failure.
+    add(body,
+      row("Primary MX", smtp.host, true),
+      el("p", "rounded-md bg-sky-950/40 px-3 py-2 text-sky-200", smtp.reason),
+      el("p", "text-xs text-slate-500", "The MX and reverse-DNS checks above still ran normally."));
+    return wrap;
+  }
+  add(body, row("Server", `${smtp.host}${smtp.ip ? " (" + smtp.ip + ")" : ""}`, true));
+  if (smtp.starttls !== undefined && smtp.starttls !== null) add(body, row("STARTTLS", smtp.starttls ? "offered" : "NOT offered"));
+  if (smtp.duration_ms != null) add(body, row("Duration", `${smtp.duration_ms} ms`));
+
+  // Step-by-step conversation log
+  if (smtp.steps?.length) {
+    const log = el("ol", "space-y-2");
+    smtp.steps.forEach((s) => {
+      const li = el("li", "rounded-md border border-slate-800 bg-slate-950 p-2");
+      add(li, add(el("div", "flex items-center justify-between gap-2"),
+                  el("span", "mono text-xs text-slate-200 break-anywhere", s.step),
+                  el("span", `mono text-xs font-bold ${s.ok ? "text-emerald-400" : "text-red-400"}`, s.code)),
+              el("div", "mono mt-1 text-xs text-slate-500 break-anywhere", s.message));
+      add(log, li);
+    });
+    add(body, subheading("Conversation"), log);
+  }
+  if (smtp.verdict) add(body, el("p", `rounded-md px-3 py-2 ${status === "pass" ? "bg-emerald-950/40 text-emerald-200" : "bg-amber-950/40 text-amber-200"}`, smtp.verdict));
+  if (smtp.error) add(body, findings({ errors: [smtp.error] }));
+  return wrap;
+}
+
+function renderTLS(tls) {
+  const { wrap, body } = card("SSL / TLS Certificate", tls.status);
+  add(body, findings(tls));
+  if (tls.not_after) {
+    const daysCls = tls.days_remaining < 0 ? "text-red-300" : tls.days_remaining <= 14 ? "text-amber-300" : "text-emerald-300";
+    add(body,
+      add(el("div", "flex items-baseline gap-2"),
+          el("span", `text-4xl font-bold ${daysCls}`, tls.days_remaining),
+          el("span", "text-slate-400", "days remaining")),
+      row("Trusted", tls.verified ? "Yes — valid chain & hostname" : `No — ${tls.verify_error}`),
+      row("Subject CN", tls.subject_cn, true),
+      row("Issuer", [tls.issuer_org, tls.issuer_cn].filter(Boolean).join(" — ") || tls.issuer),
+      row("Valid from", new Date(tls.not_before).toUTCString()),
+      row("Expires", new Date(tls.not_after).toUTCString()),
+      row("Protocol / cipher", `${tls.tls_version} / ${tls.cipher}`, true),
+      row("Connected to", `${tls.ip}:443`, true));
+    if (tls.sans?.length) {
+      const chips = el("div", "flex flex-wrap gap-1.5");
+      tls.sans.forEach((s) => add(chips, el("span", "mono rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200", s)));
+      add(body, subheading(`Subject Alternative Names (${tls.sans.length})`), chips);
+    }
+  }
+  return wrap;
+}
+
+/* =====================================================================
+   UI state helpers
+   ===================================================================== */
+function setLoading(on, domain = "") {
+  $("search-btn").disabled = on;
+  $("spinner").classList.toggle("hidden", !on);
+  $("btn-label").textContent = on ? "Analyzing…" : "Analyze";
+  $("status-line").textContent = on ? `Checking ${domain} — DNS, SPF, DMARC, MX and SSL…` : "";
+}
+
+function showError(message) {
+  const box = $("error-box");
+  box.textContent = message;
+  box.classList.remove("hidden");
+}
+
+function clearResults() {
+  $("error-box").classList.add("hidden");
+  $("summary").classList.add("hidden");
+  $("results").replaceChildren();
+}
+
+/* =====================================================================
+   Main flow: submit -> fetch -> render
+   ===================================================================== */
+async function analyze(domain) {
+  clearResults();
+  $("empty-state").classList.add("hidden");
+  setLoading(true, domain);
+
+  // AbortController lets us give up if the server never answers
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const url = `${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`;
+    const res = await fetch(url, { signal: controller.signal });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // FastAPI puts error text in "detail"
+      const detail = typeof data.detail === "string" ? data.detail : `Request failed (HTTP ${res.status}).`;
+      throw new Error(detail);
+    }
+
+    renderSummary(data);
+    add($("results"),
+      renderDNS(data.dns),
+      renderEmailAuth(data.spf, data.dmarc),
+      renderMail(data.mail),
+      renderSMTP(data.mail),
+      renderTLS(data.tls));
+    $("status-line").textContent = `Checked ${data.domain} in ${(data.duration_ms / 1000).toFixed(1)} s${data.cached ? " (cached result)" : ""}.`;
+    return; // keep status line
+  } catch (err) {
+    if (err.name === "AbortError") showError("The API took too long to respond. Try again in a minute.");
+    else if (err instanceof TypeError) showError("Couldn't reach the API. Check your connection, or see the Vercel dashboard → Logs.");
+    else showError(err.message);
+  } finally {
+    clearTimeout(timer);
+    $("search-btn").disabled = false;
+    $("spinner").classList.add("hidden");
+    $("btn-label").textContent = "Analyze";
+  }
+  $("status-line").textContent = "";
+}
+
+$("search-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const domain = $("domain-input").value.trim();
+  if (!domain) return;
+  // Put the domain in the URL so results are shareable: ?domain=example.com
+  history.replaceState(null, "", `?domain=${encodeURIComponent(domain)}`);
+  analyze(domain);
+});
+
+// If the page was opened with ?domain=..., run it straight away
+const initial = new URLSearchParams(location.search).get("domain");
+if (initial) {
+  $("domain-input").value = initial;
+  analyze(initial);
+}
+</script>
+</body>
+</html>
