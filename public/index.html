@@ -4,81 +4,145 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DigDNS — DNS & Mail Diagnostics</title>
-  <meta name="description" content="Open-source DNS, SPF, DMARC, SMTP and SSL diagnostics for sysadmins." />
-  <!-- Tailwind CSS v4 browser build: scans the page (including elements JS adds later) and generates CSS -->
+  <meta name="description" content="Check a domain's DNS, hosting, SPF, DMARC, mail servers and SSL certificate in one report." />
+  <meta name="theme-color" content="#262262" />
+  <!-- Favicon: navy circle with a sky-blue check, inline so there's no extra file -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23262262'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='%2327AAE1' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+
+  <!-- Fonts: Archivo (variable width — the extra-wide cut echoes the logo's wordmark)
+       and JetBrains Mono for raw DNS data only. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS v4 browser build: generates CSS for classes on the page, including ones JS adds later -->
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+  <!-- Design tokens. Each --color-x becomes classes like bg-x, text-x, border-x. -->
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+      --color-navy:   #262262;  /* logo circle + wordmark: header, headings   */
+      --color-sky:    #27AAE1;  /* logo swoosh: button, focus, info           */
+      --color-blue:   #1679A8;  /* darker sky — for TEXT on white (4.8:1)     */
+      --color-orange: #F7941D;  /* logo tagline dots: tiny accents only       */
+      --color-canvas: #EEF1F7;  /* page background, cool grey tied to navy    */
+      --color-ink:    #29284A;  /* body text, navy-tinted                     */
+      --color-rule:   #DDE2EC;  /* dividers inside the report sheet           */
+
+      /* Status colours stay green/amber/red: people read them instantly. */
+      --color-pass: #13795B;  --color-pass-tint: #E6F4EE;
+      --color-warn: #A85A06;  --color-warn-tint: #FDF2E1;
+      --color-fail: #C0261B;  --color-fail-tint: #FCEBE9;
+    }
+  </style>
   <style>
-    /* Small things Tailwind classes don't cover */
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    /* Wide display cut of Archivo — the page's one typographic flourish */
+    .display { font-stretch: 125%; letter-spacing: -0.01em; }
+    .semi-wide { font-stretch: 112%; }
     .break-anywhere { overflow-wrap: anywhere; }
+
+    /* Health rail: bars grow left-to-right once, when results arrive.
+       This is the only automatic motion on the page. */
+    .rail-bar { transform: scaleX(0); transform-origin: left; transition: transform .55s cubic-bezier(.2,.8,.2,1); }
+    .rail-ready .rail-bar { transform: scaleX(1); }
+    @media (prefers-reduced-motion: reduce) {
+      .rail-bar { transition: none; transform: none; }
+      .animate-pulse { animation: none; }
+    }
   </style>
 </head>
-<body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
+<body class="min-h-screen bg-canvas font-sans text-ink antialiased">
 
   <!-- ================= HEADER + SEARCH ================= -->
-  <header class="border-b border-slate-800 bg-slate-900/60">
-    <div class="mx-auto max-w-6xl px-4 py-10">
-      <h1 class="text-3xl font-bold tracking-tight text-white">Dig<span class="text-emerald-400">DNS</span></h1>
-      <p class="mt-1 text-slate-400">DNS records, SPF, DMARC, MX, reverse DNS and SSL — in one check.</p>
+  <header class="bg-navy pb-24 text-white">
+    <div class="mx-auto max-w-5xl px-4 pt-8 sm:px-6">
+      <div class="flex items-baseline justify-between gap-4">
+        <a href="/" class="display text-2xl font-extrabold focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
+          Dig<span class="text-sky">DNS</span><span class="text-orange">.</span>
+        </a>
+        <a href="https://github.com/sujaitech/digdns" class="text-sm text-white/70 underline-offset-4 hover:text-white hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Source on GitHub</a>
+      </div>
 
-      <form id="search-form" class="mt-6 flex flex-col gap-3 sm:flex-row" autocomplete="off">
-        <label for="domain-input" class="sr-only">Domain</label>
-        <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false"
+      <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">
+        Check a domain’s DNS, mail and SSL in one report
+      </h1>
+
+      <form id="search-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+        <label for="domain-input" class="sr-only">Domain to check</label>
+        <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
                placeholder="example.com" required maxlength="253"
-               class="mono flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-lg text-white placeholder-slate-600 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30" />
+               class="flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
         <button id="search-btn" type="submit"
-                class="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60">
-          <!-- Spinner: hidden until a request is running -->
+                class="inline-flex items-center justify-center gap-2 rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">
           <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
             <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
           </svg>
-          <span id="btn-label">Analyze</span>
+          <span id="btn-label">Check domain</span>
         </button>
       </form>
-      <p id="status-line" class="mt-3 min-h-5 text-sm text-slate-400" aria-live="polite"></p>
+
+      <!-- Quick picks (hidden once a report is showing) -->
+      <div id="try-row" class="mt-4 flex flex-wrap items-center gap-2 text-sm text-white/70">
+        <span>Try</span>
+        <button type="button" data-try="google.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">google.com</button>
+        <button type="button" data-try="github.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">github.com</button>
+        <button type="button" data-try="cloudflare.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">cloudflare.com</button>
+        <span class="mx-1 text-white/30" aria-hidden="true">|</span>
+        <button type="button" id="sample-btn" class="text-white underline underline-offset-4 hover:text-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">See a sample report</button>
+      </div>
     </div>
   </header>
 
-  <!-- ================= RESULTS ================= -->
-  <main class="mx-auto max-w-6xl px-4 py-8">
+  <!-- ================= REPORT ================= -->
+  <main class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <!-- Error banner -->
-    <div id="error-box" class="hidden rounded-lg border border-red-800 bg-red-950/50 p-4 text-red-200"></div>
+    <div id="error-box" role="alert" class="mb-4 hidden rounded-xl border border-fail/30 bg-white p-5 text-fail shadow-sm"></div>
 
-    <!-- Summary pills (one per section) -->
-    <section id="summary" class="hidden mb-6 grid grid-cols-2 gap-3 md:grid-cols-5"></section>
+    <!-- Intro shown before the first check -->
+    <section id="intro" class="rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-10">
+      <h2 class="semi-wide text-xl font-bold text-navy">What the report covers</h2>
+      <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
+        <p><strong class="text-navy">Hosting.</strong> Which server or network serves the website, from reverse DNS and IP ownership.</p>
+        <p><strong class="text-navy">DNS records.</strong> A, AAAA, MX, TXT, CNAME, NS, SOA and common SRV names.</p>
+        <p><strong class="text-navy">SPF and DMARC.</strong> Syntax, the 10-lookup limit across every include, and policy strength.</p>
+        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, plus certificate issuer, expiry and covered names.</p>
+      </div>
+    </section>
 
-    <!-- Cards get injected here -->
-    <section id="results" class="grid gap-6 lg:grid-cols-2"></section>
-
-    <!-- Empty state -->
-    <div id="empty-state" class="py-16 text-center text-slate-500">
-      Enter a domain above to run a full diagnostic.
-    </div>
+    <!-- The report sheet (filled in by JavaScript) -->
+    <article id="report" class="hidden overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
+      <div id="sample-banner" class="hidden bg-orange/15 px-6 py-2.5 text-sm text-ink sm:px-10">
+        This is a sample report with made-up data for a fictional domain. Enter a real domain above to run a live check.
+      </div>
+      <div id="hero" class="p-6 sm:p-10"></div>
+      <div id="sections"></div>
+    </article>
   </main>
 
-  <footer class="mx-auto max-w-6xl px-4 pb-10 text-xs text-slate-600">
-    Open source · runs on Vercel · nothing you enter is stored.
+  <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
+    DigDNS is open source and doesn’t store the domains you check.
   </footer>
 
 <script>
 /* =====================================================================
-   CONFIG — change this to your API's public URL (no trailing slash)
+   CONFIG
    ===================================================================== */
-// Empty string = same domain as this page (Vercel serves both). Nothing to change.
-// Only set this if you host the page somewhere else, e.g. "https://digdns.sujaiprojects.stream".
+// Empty string = same domain as this page (Vercel serves both page and API).
 const API_BASE = "";
-const REQUEST_TIMEOUT_MS = 65000; // a bit longer than the function's 60 s maxDuration (vercel.json)
+const REQUEST_TIMEOUT_MS = 65000; // a little longer than the function's 60 s limit (vercel.json)
 
 /* =====================================================================
    DOM helpers
-   SECURITY NOTE: DNS records (TXT especially) are controlled by whoever
-   owns the domain being checked. We ALWAYS insert them with textContent,
-   never innerHTML, so a malicious TXT record can't inject scripts.
+   SECURITY: DNS data (TXT records especially) is written by whoever owns
+   the domain being checked. Everything goes in via textContent, never
+   innerHTML, so a malicious record can't inject scripts into this page.
    ===================================================================== */
 const $ = (id) => document.getElementById(id);
 
-/** Create an element with classes and (safe) text content. */
 function el(tag, className = "", text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -86,256 +150,413 @@ function el(tag, className = "", text) {
   return node;
 }
 
-/** Append several children at once, skipping null/undefined. */
 function add(parent, ...children) {
   children.flat().forEach((c) => c && parent.appendChild(c));
   return parent;
 }
 
-// Colours for each status the API can return
-const STATUS_STYLE = {
-  pass:  { label: "PASS",  cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30" },
-  warn:  { label: "WARN",  cls: "bg-amber-500/15 text-amber-300 ring-amber-500/30" },
-  fail:  { label: "FAIL",  cls: "bg-red-500/15 text-red-300 ring-red-500/30" },
-  error: { label: "ERROR", cls: "bg-red-500/15 text-red-300 ring-red-500/30" },
-  info:  { label: "INFO",  cls: "bg-sky-500/15 text-sky-300 ring-sky-500/30" },
+/* ---- Status styling ----------------------------------------------- */
+const STATUS = {
+  pass:    { word: "Pass",     pill: "bg-pass-tint text-pass",  bar: "bg-pass" },
+  warn:    { word: "Warning",  pill: "bg-warn-tint text-warn",  bar: "bg-warn" },
+  fail:    { word: "Fail",     pill: "bg-fail-tint text-fail",  bar: "bg-fail" },
+  error:   { word: "Error",    pill: "bg-fail-tint text-fail",  bar: "bg-fail" },
+  info:    { word: "Info",     pill: "bg-sky/15 text-blue",     bar: "bg-sky" },
+  pending: { word: "Checking", pill: "bg-canvas text-ink/60",   bar: "bg-rule animate-pulse" },
 };
+const st = (s) => STATUS[s] || STATUS.info;
 
-function badge(status) {
-  const s = STATUS_STYLE[status] || STATUS_STYLE.info;
-  return el("span", `inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ring-1 ${s.cls}`, s.label);
+function pill(status) {
+  return el("span", `inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(status).pill}`, st(status).word);
 }
 
-/** A results card with a title, a status badge and a body you fill in. */
-function card(title, status) {
-  const wrap = el("article", "rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-sm");
-  const head = add(el("div", "mb-4 flex items-center justify-between gap-3"),
-                   el("h2", "text-lg font-semibold text-white", title),
-                   status ? badge(status) : null);
-  const body = el("div", "space-y-4 text-sm");
+/** A small "Copy" button for raw records. */
+function copyButton(text) {
+  const btn = el("button", "rounded-md px-2 py-1 text-xs font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Copy");
+  btn.type = "button";
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+    catch { btn.textContent = "Copy failed"; }
+    setTimeout(() => (btn.textContent = "Copy"), 1600);
+  });
+  return btn;
+}
+
+/** Raw record shown as code, with a copy button. */
+function recordBlock(text) {
+  const wrap = el("div", "relative rounded-lg bg-canvas");
+  const pre = el("pre", "whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed text-navy", text);
+  const btn = copyButton(text);
+  btn.classList.add("absolute", "right-2", "top-2");
+  return add(wrap, pre, btn);
+}
+
+/** Label/value line inside a section. */
+function row(label, value, mono = false) {
+  const r = el("div", "grid grid-cols-[minmax(7rem,38%)_1fr] gap-3 border-b border-rule/70 py-2 last:border-0");
+  add(r, el("div", "text-ink/60", label));
+  const v = value instanceof Node ? value : el("div", "", value ?? "—");
+  v.className += ` break-anywhere text-ink ${mono ? "font-mono text-[13px]" : ""}`;
+  return add(r, v);
+}
+
+/** Errors, warnings and notes as a list of plain sentences with a coloured edge. */
+function findings(section) {
+  const items = [
+    ...(section.errors || []).map((t) => ["border-fail bg-fail-tint/60", t]),
+    ...(section.warnings || []).map((t) => ["border-warn bg-warn-tint/70", t]),
+    ...(section.notes || []).map((t) => ["border-sky bg-sky/10", t]),
+  ];
+  if (!items.length) return null;
+  const list = el("ul", "space-y-2");
+  items.forEach(([cls, t]) => add(list, el("li", `break-anywhere rounded-r-md border-l-[3px] px-3 py-2 text-[14px] leading-snug ${cls}`, t)));
+  return list;
+}
+
+function subheading(text) {
+  return el("h4", "text-sm font-semibold text-blue", text);
+}
+
+/**
+ * A report section: title, status pill and a one-line verdict, then a body.
+ * id is used by the health rail to jump here.
+ */
+function section(id, title, status, verdict) {
+  const wrap = el("section", "scroll-mt-6 p-6 sm:p-8");
+  wrap.id = id;
+  const head = el("div", "mb-5 flex items-start justify-between gap-4");
+  add(head, add(el("div"),
+                el("h3", "semi-wide text-lg font-bold text-navy", title),
+                verdict ? el("p", "mt-0.5 text-[15px] text-ink/70", verdict) : null),
+            pill(status));
+  const body = el("div", "space-y-4 text-[14px]");
   add(wrap, head, body);
   return { wrap, body };
 }
 
-/** A label/value row; value may be text or an element. */
-function row(label, value, mono = false) {
-  const r = el("div", "grid grid-cols-3 gap-2 border-b border-slate-800/70 py-1.5 last:border-0");
-  add(r, el("div", "text-slate-400", label));
-  const v = value instanceof Node ? value : el("div", "", value ?? "—");
-  v.className += ` col-span-2 break-anywhere ${mono ? "mono text-slate-100" : "text-slate-100"}`;
-  return add(r, v);
+/** Put sections side by side on wide screens, separated by a rule. */
+function pairRow(...sections) {
+  return add(el("div", "grid border-t border-rule lg:grid-cols-2 lg:divide-x lg:divide-rule max-lg:[&>*+*]:border-t max-lg:[&>*+*]:border-rule"), sections);
 }
-
-/** Red error list + amber warning list for a section. */
-function findings(section) {
-  const box = el("div", "space-y-1.5");
-  (section.errors || []).forEach((t) =>
-    add(box, add(el("div", "flex gap-2 rounded-md bg-red-950/40 px-3 py-2 text-red-200"), el("span", "font-bold", "✕"), el("span", "break-anywhere", t))));
-  (section.warnings || []).forEach((t) =>
-    add(box, add(el("div", "flex gap-2 rounded-md bg-amber-950/40 px-3 py-2 text-amber-200"), el("span", "font-bold", "!"), el("span", "break-anywhere", t))));
-  (section.notes || []).forEach((t) =>
-    add(box, add(el("div", "flex gap-2 rounded-md bg-sky-950/40 px-3 py-2 text-sky-200"), el("span", "font-bold", "i"), el("span", "break-anywhere", t))));
-  return box.childElementCount ? box : null;
-}
-
-function subheading(text) {
-  return el("h3", "text-xs font-semibold uppercase tracking-wider text-slate-500", text);
-}
-
-function codeBlock(text) {
-  return el("pre", "mono whitespace-pre-wrap break-anywhere rounded-md bg-slate-950 p-3 text-xs text-emerald-200", text);
+function fullRow(sectionEl) {
+  return add(el("div", "border-t border-rule"), sectionEl);
 }
 
 /* =====================================================================
-   Section renderers — each takes one part of the API JSON and builds a card
+   One-line verdicts (what a busy admin wants to know first)
    ===================================================================== */
-
-function renderSummary(data) {
-  const box = $("summary");
-  box.replaceChildren();
-  const items = [
-    ["DNS", data.dns?.status], ["SPF", data.spf?.status], ["DMARC", data.dmarc?.status],
-    ["MX / rDNS", data.mail?.status], ["SSL / TLS", data.tls?.status],
-  ];
-  items.forEach(([name, status]) => {
-    add(box, add(el("div", "flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900 px-4 py-3"),
-                 el("span", "font-medium text-slate-300", name), badge(status)));
-  });
-  box.classList.remove("hidden");
+function verdictDNS(dns) {
+  const recs = dns.records || {};
+  const total = Object.values(recs).reduce((n, r) => n + (r.records?.length || 0), 0);
+  if (dns.status === "fail") return dns.errors?.[0] || "The domain doesn't resolve.";
+  return `${total} record${total === 1 ? "" : "s"} found`;
+}
+function verdictSPF(spf) {
+  if (!spf.found) return "No SPF record";
+  if (spf.lookup_count > spf.lookup_limit) return `${spf.lookup_count} lookups — over the limit of ${spf.lookup_limit}`;
+  return `${spf.lookup_count} of ${spf.lookup_limit} lookups used, ends in ${spf.all_qualifier ? spf.all_qualifier + "all" : "no all"}`;
+}
+function verdictDMARC(d) {
+  if (!d.found) return "No DMARC record";
+  if (!d.policy) return "Record has no valid policy";
+  return { none: "Monitoring only (p=none)", quarantine: "Suspicious mail goes to spam (p=quarantine)", reject: "Spoofed mail is rejected (p=reject)" }[d.policy];
+}
+function verdictMail(m) {
+  if (m.null_mx) return "Domain declares it accepts no mail";
+  if (!m.mx?.length) return "Can't receive email";
+  if (m.implicit_mx) return "No MX record, falls back to the website address";
+  const n = m.mx.length;
+  return `${n} mail server${n === 1 ? "" : "s"}`;
+}
+function verdictTLS(t) {
+  if (!t.not_after) return t.errors?.[0] || "No certificate could be read";
+  if (!t.verified) return "Certificate is not trusted";
+  if (t.days_remaining < 0) return `Expired ${-t.days_remaining} days ago`;
+  return `Valid for ${t.days_remaining} more day${t.days_remaining === 1 ? "" : "s"}`;
 }
 
-/** Turn one DNS record value (string or object) into display text. */
+/* =====================================================================
+   HERO: domain, hosting answer, health rail
+   ===================================================================== */
+const RAIL = [
+  ["DNS",   "sec-dns",   (d) => d.dns?.status,   (d) => verdictDNS(d.dns)],
+  ["SPF",   "sec-spf",   (d) => d.spf?.status,   (d) => verdictSPF(d.spf)],
+  ["DMARC", "sec-dmarc", (d) => d.dmarc?.status, (d) => verdictDMARC(d.dmarc)],
+  ["Mail",  "sec-mail",  (d) => d.mail?.status,  (d) => verdictMail(d.mail)],
+  ["SSL",   "sec-tls",   (d) => d.tls?.status,   (d) => verdictTLS(d.tls)],
+];
+
+function renderRail(data, pending = false) {
+  const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-4 sm:grid-cols-5");
+  rail.setAttribute("aria-label", "Results summary");
+  RAIL.forEach(([name, target, statusOf, verdictOf]) => {
+    const status = pending ? "pending" : statusOf(data) || "error";
+    const verdict = pending ? "Checking…" : (() => { try { return verdictOf(data); } catch { return st(status).word; } })();
+    const a = el("a", "group block rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
+    a.href = `#${target}`;
+    add(a,
+      add(el("div", "h-1.5 overflow-hidden rounded-full bg-rule"), el("div", `rail-bar h-full ${st(status).bar}`)),
+      add(el("div", "mt-2 flex items-center gap-2"),
+          el("span", "font-bold text-navy group-hover:text-blue", name),
+          el("span", `text-xs font-semibold ${pending ? "text-ink/50" : st(status).pill.split(" ").find((c) => c.startsWith("text-"))}`, st(status).word)),
+      el("div", "mt-0.5 text-[13px] leading-snug text-ink/70", verdict));
+    add(rail, a);
+  });
+  return rail;
+}
+
+function renderHosting(h) {
+  const box = el("div", "mt-4");
+  if (!h || h.status === "error") {
+    add(box, el("p", "text-lg text-ink/70", "Hosting details couldn't be looked up."));
+    return box;
+  }
+  add(box,
+    el("p", "semi-wide break-anywhere text-xl font-bold text-navy sm:text-2xl", h.headline),
+    el("p", "mt-1 max-w-3xl text-[15px] leading-relaxed text-ink/75", h.detail));
+
+  if (h.ips?.length) {
+    const list = el("ul", "mt-4 space-y-1.5");
+    h.ips.forEach((i) => {
+      const o = i.owner || {};
+      const li = el("li", "flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px]");
+      add(li,
+        el("span", "font-mono font-semibold text-navy", i.ip),
+        el("span", "font-mono text-ink/70", i.ptr?.length ? i.ptr[0] : "no PTR record"),
+        i.ptr?.length ? el("span", `text-xs font-semibold ${i.forward_confirmed ? "text-pass" : "text-warn"}`, i.forward_confirmed ? "PTR confirmed" : "PTR not confirmed") : null,
+        o.asn ? el("span", "text-ink/60", `${o.provider || o.as_name} (AS${o.asn})${o.country ? ", " + o.country : ""}`) : null);
+      add(list, li);
+    });
+    add(box, list);
+  }
+  const f = findings({ notes: h.notes, warnings: h.warnings });
+  if (f) { f.classList.add("mt-4"); add(box, f); }
+  return box;
+}
+
+function renderHero(data, { pending = false } = {}) {
+  const hero = $("hero");
+  hero.replaceChildren();
+  add(hero, el("h2", "display break-anywhere text-4xl font-extrabold leading-[1.05] text-navy sm:text-6xl", data.domain));
+
+  if (pending) {
+    add(hero, el("p", "mt-4 text-lg text-ink/60", "Looking up DNS, hosting, mail and certificate details…"));
+  } else {
+    add(hero, renderHosting(data.hosting));
+  }
+
+  const rail = renderRail(data, pending);
+  add(hero, rail);
+  // Two frames later, add the class that grows the bars (lets the browser paint them at 0 first).
+  requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
+
+  if (!pending) {
+    const meta = data.sample ? "Sample data"
+      : `Checked in ${(data.duration_ms / 1000).toFixed(1)} s${data.cached ? " (cached from the last 5 minutes)" : ""}`;
+    add(hero, el("p", "mt-6 text-xs text-ink/50", meta));
+  }
+}
+
+/* =====================================================================
+   SECTIONS
+   ===================================================================== */
 function recordText(type, r) {
   if (typeof r === "string") return r;
   switch (type) {
     case "MX":  return `${r.preference}  ${r.exchange}`;
-    case "SOA": return `${r.mname}  ${r.rname}  serial=${r.serial} refresh=${r.refresh} retry=${r.retry} expire=${r.expire} min=${r.minimum}`;
-    case "SRV": return `${r.name}  →  ${r.priority} ${r.weight} ${r.port} ${r.target}`;
+    case "SOA": return `${r.mname}  ${r.rname}  serial ${r.serial}  refresh ${r.refresh}  retry ${r.retry}  expire ${r.expire}  min ${r.minimum}`;
+    case "SRV": return `${r.name}  ${r.priority} ${r.weight} ${r.port} ${r.target}`;
     default:    return JSON.stringify(r);
   }
 }
 
 function renderDNS(dns) {
-  const { wrap, body } = card("DNS Records", dns.status);
+  const { wrap, body } = section("sec-dns", "DNS records", dns.status, verdictDNS(dns));
   add(body, findings(dns));
-  const table = el("div", "divide-y divide-slate-800 rounded-lg border border-slate-800");
+  const table = el("dl", "divide-y divide-rule/70");
   Object.entries(dns.records || {}).forEach(([type, info]) => {
-    const r = el("div", "grid grid-cols-[4.5rem_1fr] gap-3 px-3 py-2");
-    add(r, el("div", "mono font-semibold text-emerald-400", type));
-    const values = el("div", "space-y-1");
-    if (info.error) add(values, el("div", "text-red-300", info.error));
-    else if (!info.records.length) add(values, el("div", "text-slate-600", "— none —"));
-    info.records.forEach((rec) => add(values, el("div", "mono break-anywhere text-xs text-slate-100", recordText(type, rec))));
-    add(table, add(r, values));
+    const r = el("div", "grid grid-cols-[4.5rem_1fr] gap-4 py-2.5 sm:grid-cols-[6rem_1fr]");
+    add(r, el("dt", "pt-px font-mono text-[13px] font-semibold text-blue", type));
+    const dd = el("dd", "min-w-0 space-y-1");
+    if (info.error) add(dd, el("div", "text-fail", info.error));
+    else if (!info.records.length) add(dd, el("div", "text-ink/40", "None"));
+    info.records.forEach((rec) => add(dd, el("div", "break-anywhere font-mono text-[13px] leading-relaxed text-ink", recordText(type, rec))));
+    add(table, add(r, dd));
   });
   add(body, table);
   return wrap;
 }
 
-function renderEmailAuth(spf, dmarc) {
-  const worst = [spf.status, dmarc.status].includes("fail") || [spf.status, dmarc.status].includes("error") ? "fail"
-              : [spf.status, dmarc.status].includes("warn") ? "warn" : "pass";
-  const { wrap, body } = card("Email Authentication", worst);
-
-  // ---- SPF ----
-  add(body, add(el("div", "flex items-center gap-2"), subheading("SPF"), badge(spf.status)));
-  if (spf.record) add(body, codeBlock(spf.record));
+function renderSPF(spf) {
+  const { wrap, body } = section("sec-spf", "SPF", spf.status, verdictSPF(spf));
+  if (spf.record) add(body, recordBlock(spf.record));
   if (spf.found) {
-    // Lookup meter: x / 10
     const pct = Math.min(100, (spf.lookup_count / spf.lookup_limit) * 100);
-    const color = spf.lookup_count > spf.lookup_limit ? "bg-red-500" : spf.lookup_count >= 8 ? "bg-amber-500" : "bg-emerald-500";
-    const meter = add(el("div", "space-y-1"),
-      add(el("div", "flex justify-between text-xs text-slate-400"),
-          el("span", "", "DNS lookups"), el("span", "mono", `${spf.lookup_count} / ${spf.lookup_limit}`)),
-      add(el("div", "h-2 w-full overflow-hidden rounded bg-slate-800"), Object.assign(el("div", `h-full ${color}`), { style: `width:${pct}%` })));
-    add(body, meter,
-        row("Ends with", spf.all_qualifier ? `${spf.all_qualifier}all` : "(no all)", true),
-        row("Void lookups", String(spf.void_lookups)));
+    const color = spf.lookup_count > spf.lookup_limit ? "bg-fail" : spf.lookup_count >= 8 ? "bg-warn" : "bg-pass";
+    const bar = el("div", `h-full rounded-full ${color}`);
+    bar.style.width = `${pct}%`;
+    add(body,
+      add(el("div"),
+        add(el("div", "mb-1.5 flex justify-between text-[13px]"),
+            el("span", "text-ink/60", "DNS lookups"),
+            el("span", "font-semibold text-navy", `${spf.lookup_count} of ${spf.lookup_limit}`)),
+        add(el("div", "h-2 overflow-hidden rounded-full bg-canvas"), bar)),
+      add(el("div"),
+        row("Ends with", spf.all_qualifier ? `${spf.all_qualifier}all` : "No all mechanism", true),
+        row("Void lookups", String(spf.void_lookups))));
     if (spf.includes?.length) {
-      const list = el("div", "space-y-1");
-      spf.includes.forEach((inc) =>
-        add(list, el("div", "mono text-xs text-slate-300", `${"  ".repeat(inc.depth - 1)}↳ ${inc.via}:${inc.domain}${inc.record ? "" : "  (no SPF!)"}`)));
-      add(body, subheading("Include tree"), list);
+      const list = el("ul", "space-y-1 font-mono text-[13px] text-ink/80");
+      spf.includes.forEach((inc) => {
+        const li = el("li", "break-anywhere", `${inc.via}:${inc.domain}${inc.record ? "" : "  (no SPF record)"}`);
+        li.style.paddingLeft = `${(inc.depth - 1) * 1.25}rem`;
+        add(list, li);
+      });
+      add(body, subheading("Includes followed"), list);
     }
   }
   add(body, findings(spf));
+  return wrap;
+}
 
-  // ---- DMARC ----
-  add(body, el("hr", "border-slate-800"));
-  add(body, add(el("div", "flex items-center gap-2"), subheading("DMARC"), badge(dmarc.status)));
-  if (dmarc.record) add(body, codeBlock(dmarc.record));
-  if (dmarc.found) {
-    add(body,
-      row("Policy (p)", dmarc.policy || "invalid", true),
-      row("Subdomain policy (sp)", dmarc.subdomain_policy || `inherits (${dmarc.policy || "?"})`, true),
-      row("Percentage (pct)", `${dmarc.pct}%`),
-      row("Alignment", `DKIM: ${dmarc.adkim === "s" ? "strict" : "relaxed"}, SPF: ${dmarc.aspf === "s" ? "strict" : "relaxed"}`),
-      row("Aggregate reports (rua)", dmarc.rua.join(", ") || "none", true),
-      row("Forensic reports (ruf)", dmarc.ruf.join(", ") || "none", true));
+function renderDMARC(d) {
+  const { wrap, body } = section("sec-dmarc", "DMARC", d.status, verdictDMARC(d));
+  if (d.record) add(body, recordBlock(d.record));
+  if (d.found) {
+    add(body, add(el("div"),
+      row("Policy", d.policy || "Invalid", true),
+      row("Subdomain policy", d.subdomain_policy || `Same as policy`),
+      row("Applies to", `${d.pct}% of failing mail`),
+      row("Alignment", `DKIM ${d.adkim === "s" ? "strict" : "relaxed"}, SPF ${d.aspf === "s" ? "strict" : "relaxed"}`),
+      row("Aggregate reports", d.rua.join(", ") || "Not set", true),
+      row("Forensic reports", d.ruf.join(", ") || "Not set", true)));
   }
-  add(body, findings(dmarc));
+  add(body, findings(d));
   return wrap;
 }
 
 function renderMail(mail) {
-  const { wrap, body } = card("MX & Reverse DNS", mail.status);
+  const { wrap, body } = section("sec-mail", "Mail servers", mail.status, verdictMail(mail));
   add(body, findings(mail));
-
   if (mail.mx?.length) {
-    add(body, subheading("MX hosts (by priority)"));
-    mail.mx.forEach((m) =>
-      add(body, row(m.implicit ? "Implicit (A record)" : `Pref ${m.preference}`, `${m.host}${m.ips?.length ? "  →  " + m.ips.join(", ") : ""}`, true)));
+    const list = el("div");
+    mail.mx.forEach((m) => {
+      const v = add(el("div"), el("div", "font-mono text-[13px] font-semibold text-navy", m.host),
+                    m.ips?.length ? el("div", "font-mono text-[12px] text-ink/60", m.ips.join(", ")) : el("div", "text-[12px] text-fail", "Doesn't resolve"));
+      add(list, row(m.implicit ? "Fallback (A record)" : `Priority ${m.preference}`, v));
+    });
+    add(body, list);
   }
   if (mail.rdns?.length) {
-    add(body, subheading("Reverse DNS (PTR → forward-confirmed)"));
+    const list = el("div");
     mail.rdns.forEach((r) => {
-      const v = el("div", "flex flex-wrap items-center gap-2");
-      add(v, el("span", "mono", r.ptr.length ? r.ptr.join(", ") : "no PTR"),
-             badge(r.forward_confirmed ? "pass" : "fail"));
-      add(body, row(r.ip, v, true));
+      const v = add(el("div", "flex flex-wrap items-baseline gap-x-3"),
+        el("span", "font-mono text-[13px]", r.ptr.length ? r.ptr.join(", ") : "No PTR record"),
+        el("span", `text-xs font-semibold ${r.forward_confirmed ? "text-pass" : "text-fail"}`, r.forward_confirmed ? "Confirmed" : "Not confirmed"));
+      add(list, row(r.ip, v));
     });
+    add(body, subheading("Reverse DNS of mail servers"), list);
   }
-  return wrap;
-}
 
-function renderSMTP(mail) {
+  // SMTP handshake result lives with the mail servers it tested.
   const smtp = mail.smtp;
-  let status = "info";
-  if (smtp?.disabled) status = "info";
-  else if (smtp) status = smtp.accepts_mail === true ? "pass" : smtp.accepts_mail === false ? "fail" : "warn";
-  // No handshake was attempted = nothing to judge, so the badge is INFO, never FAIL.
-  // (Problems with the domain's mail setup are reported on the MX card instead.)
-  const { wrap, body } = card("SMTP Handshake (port 25)", status);
-
-  if (!smtp) {
-    add(body, el("p", "text-slate-400", mail.null_mx
-      ? "Domain accepts no mail (null MX) — handshake skipped."
-      : "No mail server to test — see the MX & Reverse DNS card."));
-    return wrap;
+  if (smtp?.disabled) {
+    add(body, el("p", "rounded-lg bg-canvas px-3 py-2.5 text-[13px] text-ink/70",
+      "Live SMTP handshake isn't available on this deployment, because the hosting platform blocks outbound port 25."));
+  } else if (smtp && !smtp.skipped) {
+    add(body, subheading("SMTP handshake (port 25)"));
+    const log = el("ol", "space-y-1.5");
+    (smtp.steps || []).forEach((s) => add(log, add(el("li", "rounded-md bg-canvas px-3 py-2"),
+      add(el("div", "flex justify-between gap-2 font-mono text-[12px]"),
+          el("span", "break-anywhere text-navy", s.step),
+          el("span", `font-bold ${s.ok ? "text-pass" : "text-fail"}`, s.code)),
+      el("div", "mt-0.5 break-anywhere font-mono text-[12px] text-ink/60", s.message))));
+    add(body, log);
+    if (smtp.verdict) add(body, el("p", "text-[14px] font-semibold text-navy", smtp.verdict));
+    if (smtp.error) add(body, findings({ errors: [smtp.error] }));
   }
-  if (smtp.disabled) {
-    // Deployment can't reach port 25 (Vercel). Say so plainly instead of showing a fake failure.
-    add(body,
-      row("Primary MX", smtp.host, true),
-      el("p", "rounded-md bg-sky-950/40 px-3 py-2 text-sky-200", smtp.reason),
-      el("p", "text-xs text-slate-500", "The MX and reverse-DNS checks above still ran normally."));
-    return wrap;
-  }
-  add(body, row("Server", `${smtp.host}${smtp.ip ? " (" + smtp.ip + ")" : ""}`, true));
-  if (smtp.starttls !== undefined && smtp.starttls !== null) add(body, row("STARTTLS", smtp.starttls ? "offered" : "NOT offered"));
-  if (smtp.duration_ms != null) add(body, row("Duration", `${smtp.duration_ms} ms`));
-
-  // Step-by-step conversation log
-  if (smtp.steps?.length) {
-    const log = el("ol", "space-y-2");
-    smtp.steps.forEach((s) => {
-      const li = el("li", "rounded-md border border-slate-800 bg-slate-950 p-2");
-      add(li, add(el("div", "flex items-center justify-between gap-2"),
-                  el("span", "mono text-xs text-slate-200 break-anywhere", s.step),
-                  el("span", `mono text-xs font-bold ${s.ok ? "text-emerald-400" : "text-red-400"}`, s.code)),
-              el("div", "mono mt-1 text-xs text-slate-500 break-anywhere", s.message));
-      add(log, li);
-    });
-    add(body, subheading("Conversation"), log);
-  }
-  if (smtp.verdict) add(body, el("p", `rounded-md px-3 py-2 ${status === "pass" ? "bg-emerald-950/40 text-emerald-200" : "bg-amber-950/40 text-amber-200"}`, smtp.verdict));
-  if (smtp.error) add(body, findings({ errors: [smtp.error] }));
   return wrap;
 }
 
-function renderTLS(tls) {
-  const { wrap, body } = card("SSL / TLS Certificate", tls.status);
-  add(body, findings(tls));
-  if (tls.not_after) {
-    const daysCls = tls.days_remaining < 0 ? "text-red-300" : tls.days_remaining <= 14 ? "text-amber-300" : "text-emerald-300";
-    add(body,
-      add(el("div", "flex items-baseline gap-2"),
-          el("span", `text-4xl font-bold ${daysCls}`, tls.days_remaining),
-          el("span", "text-slate-400", "days remaining")),
-      row("Trusted", tls.verified ? "Yes — valid chain & hostname" : `No — ${tls.verify_error}`),
-      row("Subject CN", tls.subject_cn, true),
-      row("Issuer", [tls.issuer_org, tls.issuer_cn].filter(Boolean).join(" — ") || tls.issuer),
-      row("Valid from", new Date(tls.not_before).toUTCString()),
-      row("Expires", new Date(tls.not_after).toUTCString()),
-      row("Protocol / cipher", `${tls.tls_version} / ${tls.cipher}`, true),
-      row("Connected to", `${tls.ip}:443`, true));
-    if (tls.sans?.length) {
+function renderTLS(t) {
+  const { wrap, body } = section("sec-tls", "SSL certificate", t.status, verdictTLS(t));
+  add(body, findings(t));
+  if (t.not_after) {
+    add(body, add(el("div"),
+      row("Trusted", t.verified ? "Yes, chain and hostname are valid" : `No: ${t.verify_error}`),
+      row("Issued to", t.subject_cn, true),
+      row("Issued by", [t.issuer_org, t.issuer_cn].filter(Boolean).join(", ") || t.issuer),
+      row("Valid from", new Date(t.not_before).toUTCString()),
+      row("Expires", new Date(t.not_after).toUTCString()),
+      row("Connection", `${t.tls_version}, ${t.cipher}`, true),
+      row("Tested on", `${t.ip}:443`, true)));
+    if (t.sans?.length) {
       const chips = el("div", "flex flex-wrap gap-1.5");
-      tls.sans.forEach((s) => add(chips, el("span", "mono rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200", s)));
-      add(body, subheading(`Subject Alternative Names (${tls.sans.length})`), chips);
+      t.sans.forEach((s) => add(chips, el("span", "rounded-md bg-canvas px-2 py-0.5 font-mono text-[12px] text-navy", s)));
+      add(body, subheading(`Names this certificate covers (${t.sans.length})`), chips);
     }
   }
   return wrap;
 }
 
+function renderReport(data) {
+  $("intro").classList.add("hidden");
+  $("try-row").classList.add("hidden");
+  $("sample-banner").classList.toggle("hidden", !data.sample);
+  $("report").classList.remove("hidden");
+  renderHero(data);
+  const s = $("sections");
+  s.replaceChildren();
+  add(s,
+    fullRow(renderDNS(data.dns)),
+    pairRow(renderSPF(data.spf), renderDMARC(data.dmarc)),
+    pairRow(renderMail(data.mail), renderTLS(data.tls)));
+}
+
 /* =====================================================================
-   UI state helpers
+   SAMPLE REPORT — fictional domain (.example is reserved, never real)
    ===================================================================== */
-function setLoading(on, domain = "") {
+const SAMPLE = {
+  sample: true, domain: "northwind.example", duration_ms: 2140, cached: false,
+  hosting: {
+    status: "info", headline: "Hosted on web3.hostco.example",
+    detail: "203.0.113.24 reverse-resolves to web3.hostco.example, on HOSTCO-AS (AS64500).",
+    ips: [
+      { ip: "203.0.113.24", ptr: ["web3.hostco.example"], forward_confirmed: true, owner: { asn: 64500, as_name: "HOSTCO-AS", country: "IN" } },
+      { ip: "2001:db8:85a3::24", ptr: [], forward_confirmed: false, owner: { asn: 64500, as_name: "HOSTCO-AS", country: "IN" } },
+    ], errors: [], warnings: [], notes: [],
+  },
+  dns: { status: "pass", errors: [], warnings: [], records: {
+    A: { records: ["203.0.113.24"] }, AAAA: { records: ["2001:db8:85a3::24"] },
+    MX: { records: [{ preference: 10, exchange: "mx1.northwind.example" }, { preference: 20, exchange: "mx2.northwind.example" }] },
+    TXT: { records: ["v=spf1 ip4:203.0.113.0/24 include:_spf.mailhost.example ~all", "site-verification=Yp3kQ81vZ"] },
+    CNAME: { records: [] }, NS: { records: ["ns1.dnshost.example", "ns2.dnshost.example"] },
+    SOA: { records: [{ mname: "ns1.dnshost.example", rname: "hostmaster.northwind.example", serial: 2026110401, refresh: 7200, retry: 3600, expire: 1209600, minimum: 3600 }] },
+    SRV: { records: [{ name: "_autodiscover._tcp.northwind.example", priority: 0, weight: 0, port: 443, target: "mail.northwind.example" }] },
+  } },
+  spf: { status: "warn", found: true, record: "v=spf1 ip4:203.0.113.0/24 include:_spf.mailhost.example ~all",
+    lookup_count: 8, lookup_limit: 10, void_lookups: 0, all_qualifier: "~",
+    includes: [{ via: "include", domain: "_spf.mailhost.example", depth: 1, record: "v=spf1 …" },
+               { via: "include", domain: "_netblocks.mailhost.example", depth: 2, record: "v=spf1 …" }],
+    errors: [], warnings: ["8/10 DNS lookups — one more vendor include could break SPF."] },
+  dmarc: { status: "warn", found: true, record: "v=DMARC1; p=none; rua=mailto:dmarc@northwind.example",
+    policy: "none", subdomain_policy: null, pct: 100, adkim: "r", aspf: "r", rua: ["dmarc@northwind.example"], ruf: [],
+    errors: [], warnings: ["p=none is monitor-only: spoofed mail is still delivered. Move to quarantine, then reject, once reports look clean."] },
+  mail: { status: "pass", null_mx: false, implicit_mx: false,
+    mx: [{ preference: 10, host: "mx1.northwind.example", ips: ["203.0.113.40"] }, { preference: 20, host: "mx2.northwind.example", ips: ["203.0.113.41"] }],
+    rdns: [{ ip: "203.0.113.40", ptr: ["mx1.northwind.example"], forward_confirmed: true }, { ip: "203.0.113.41", ptr: ["mx2.northwind.example"], forward_confirmed: true }],
+    smtp: { host: "mx1.northwind.example", skipped: true, disabled: true }, errors: [], warnings: [], notes: [] },
+  tls: { status: "pass", ip: "203.0.113.24", verified: true, subject_cn: "northwind.example", issuer_org: "Let's Encrypt", issuer_cn: "R11",
+    not_before: "2026-09-12T00:00:00+00:00", not_after: "2026-12-11T00:00:00+00:00", days_remaining: 37,
+    sans: ["northwind.example", "www.northwind.example"], tls_version: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384", errors: [], warnings: [] },
+};
+
+/* =====================================================================
+   UI state + main flow
+   ===================================================================== */
+function setLoading(on) {
   $("search-btn").disabled = on;
   $("spinner").classList.toggle("hidden", !on);
-  $("btn-label").textContent = on ? "Analyzing…" : "Analyze";
-  $("status-line").textContent = on ? `Checking ${domain} — DNS, SPF, DMARC, MX and SSL…` : "";
+  $("btn-label").textContent = on ? "Checking…" : "Check domain";
 }
 
 function showError(message) {
@@ -344,72 +565,56 @@ function showError(message) {
   box.classList.remove("hidden");
 }
 
-function clearResults() {
-  $("error-box").classList.add("hidden");
-  $("summary").classList.add("hidden");
-  $("results").replaceChildren();
-}
-
-/* =====================================================================
-   Main flow: submit -> fetch -> render
-   ===================================================================== */
 async function analyze(domain) {
-  clearResults();
-  $("empty-state").classList.add("hidden");
-  setLoading(true, domain);
+  $("error-box").classList.add("hidden");
+  $("intro").classList.add("hidden");
+  $("try-row").classList.add("hidden");
+  $("sample-banner").classList.add("hidden");
+  $("report").classList.remove("hidden");
+  $("sections").replaceChildren();
+  renderHero({ domain }, { pending: true });
+  setLoading(true);
 
-  // AbortController lets us give up if the server never answers
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
   try {
-    const url = `${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`;
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(`${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`, { signal: controller.signal });
     const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      // FastAPI puts error text in "detail"
-      const detail = typeof data.detail === "string" ? data.detail : `Request failed (HTTP ${res.status}).`;
-      throw new Error(detail);
-    }
-
-    renderSummary(data);
-    add($("results"),
-      renderDNS(data.dns),
-      renderEmailAuth(data.spf, data.dmarc),
-      renderMail(data.mail),
-      renderSMTP(data.mail),
-      renderTLS(data.tls));
-    $("status-line").textContent = `Checked ${data.domain} in ${(data.duration_ms / 1000).toFixed(1)} s${data.cached ? " (cached result)" : ""}.`;
-    return; // keep status line
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}). Try again in a minute.`);
+    renderReport(data);
   } catch (err) {
-    if (err.name === "AbortError") showError("The API took too long to respond. Try again in a minute.");
-    else if (err instanceof TypeError) showError("Couldn't reach the API. Check your connection, or see the Vercel dashboard → Logs.");
+    $("report").classList.add("hidden");
+    $("intro").classList.remove("hidden");
+    $("try-row").classList.remove("hidden");
+    if (err.name === "AbortError") showError("The check took longer than a minute and was stopped. Try again shortly.");
+    else if (err instanceof TypeError) showError("Couldn't reach the DigDNS service. Check your connection and try again.");
     else showError(err.message);
   } finally {
     clearTimeout(timer);
-    $("search-btn").disabled = false;
-    $("spinner").classList.add("hidden");
-    $("btn-label").textContent = "Analyze";
+    setLoading(false);
   }
-  $("status-line").textContent = "";
 }
 
-$("search-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const domain = $("domain-input").value.trim();
+function run(domain) {
+  domain = domain.trim();
   if (!domain) return;
-  // Put the domain in the URL so results are shareable: ?domain=example.com
-  history.replaceState(null, "", `?domain=${encodeURIComponent(domain)}`);
+  $("domain-input").value = domain;
+  history.replaceState(null, "", `?domain=${encodeURIComponent(domain)}`); // shareable link
   analyze(domain);
+}
+
+$("search-form").addEventListener("submit", (e) => { e.preventDefault(); run($("domain-input").value); });
+document.querySelectorAll("[data-try]").forEach((b) => b.addEventListener("click", () => run(b.dataset.try)));
+$("sample-btn").addEventListener("click", () => {
+  $("error-box").classList.add("hidden");
+  history.replaceState(null, "", "?sample");
+  renderReport(SAMPLE);
 });
 
-// If the page was opened with ?domain=..., run it straight away
-const initial = new URLSearchParams(location.search).get("domain");
-if (initial) {
-  $("domain-input").value = initial;
-  analyze(initial);
-}
+// Open straight into a report if the URL says so: ?domain=example.com or ?sample
+const params = new URLSearchParams(location.search);
+if (params.get("domain")) run(params.get("domain"));
+else if (params.has("sample") || window.DIGDNS_SAMPLE) renderReport(SAMPLE);
 </script>
 </body>
 </html>
