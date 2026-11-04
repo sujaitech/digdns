@@ -19,7 +19,7 @@
   <header class="border-b border-slate-800 bg-slate-900/60">
     <div class="mx-auto max-w-6xl px-4 py-10">
       <h1 class="text-3xl font-bold tracking-tight text-white">Dig<span class="text-emerald-400">DNS</span></h1>
-      <p class="mt-1 text-slate-400">DNS records, SPF, DMARC, reverse DNS, SMTP handshake and SSL — in one check.</p>
+      <p class="mt-1 text-slate-400">DNS records, SPF, DMARC, MX, reverse DNS and SSL — in one check.</p>
 
       <form id="search-form" class="mt-6 flex flex-col gap-3 sm:flex-row" autocomplete="off">
         <label for="domain-input" class="sr-only">Domain</label>
@@ -244,7 +244,7 @@ function renderMail(mail) {
   if (mail.mx?.length) {
     add(body, subheading("MX hosts (by priority)"));
     mail.mx.forEach((m) =>
-      add(body, row(`Pref ${m.preference}`, `${m.host}${m.ips?.length ? "  →  " + m.ips.join(", ") : ""}`, true)));
+      add(body, row(m.implicit ? "Implicit (A record)" : `Pref ${m.preference}`, `${m.host}${m.ips?.length ? "  →  " + m.ips.join(", ") : ""}`, true)));
   }
   if (mail.rdns?.length) {
     add(body, subheading("Reverse DNS (PTR → forward-confirmed)"));
@@ -263,10 +263,14 @@ function renderSMTP(mail) {
   let status = "info";
   if (smtp?.disabled) status = "info";
   else if (smtp) status = smtp.accepts_mail === true ? "pass" : smtp.accepts_mail === false ? "fail" : "warn";
-  const { wrap, body } = card("SMTP Handshake (port 25)", smtp ? status : (mail.null_mx ? "info" : mail.status));
+  // No handshake was attempted = nothing to judge, so the badge is INFO, never FAIL.
+  // (Problems with the domain's mail setup are reported on the MX card instead.)
+  const { wrap, body } = card("SMTP Handshake (port 25)", status);
 
   if (!smtp) {
-    add(body, el("p", "text-slate-400", mail.null_mx ? "Domain accepts no mail (null MX) — handshake skipped." : "Handshake not run — see MX card."));
+    add(body, el("p", "text-slate-400", mail.null_mx
+      ? "Domain accepts no mail (null MX) — handshake skipped."
+      : "No mail server to test — see the MX & Reverse DNS card."));
     return wrap;
   }
   if (smtp.disabled) {
