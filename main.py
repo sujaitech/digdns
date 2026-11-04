@@ -44,13 +44,20 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+import dns.asyncquery
 import dns.asyncresolver
 import dns.exception
+import dns.flags
+import dns.message
 import dns.name
+import dns.rcode
+import dns.rdatatype
 import dns.resolver
 import dns.reversename
 from cryptography import x509
@@ -63,11 +70,11 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("digdns")
+log = logging.getLogger("vdigdns")
 
 
 # =============================================================================
-# 1. CONFIGURATION (all values come from /etc/digdns-api.env in production)
+# 1. CONFIGURATION (environment variables; set them in Vercel → Settings → Environment Variables)
 # =============================================================================
 def _env_list(name: str, default: str = "") -> list[str]:
     """Read a comma-separated env var into a clean list."""
@@ -112,6 +119,10 @@ SMTP_HELO_NAME = os.getenv("SMTP_HELO_NAME") or socket.getfqdn()
 SMTP_MAIL_FROM = os.getenv("SMTP_MAIL_FROM") or f"postmaster@{SMTP_HELO_NAME}"
 
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "true").lower() == "true"
+
+# Google PageSpeed Insights API key (free). Without one, Google's shared anonymous
+# quota applies and speed tests often fail with "quota exceeded".
+PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "").strip()
 
 
 # =============================================================================
@@ -1199,6 +1210,401 @@ def nameserver_mismatch(registration: dict, dns_res: dict) -> str | None:
             ". This usually means a DNS migration wasn't finished. Update the nameservers at the registrar or in the zone so both agree.")
 
 
+# ---- 3d-7. Direct DNS queries (to a specific server, not through our resolver) ---------------------
+async def ask_server(ip: str, qname: str, rtype: str, recursive: bool = True, timeout: float = 4.0) -> tuple[Any, int]:
+    """
+    Send one DNS query straight to `ip` and return (response, round-trip ms).
+    recursive=False is how you talk to an authoritative nameserver: it must answer
+    from its own zone data. Falls back to TCP if the UDP answer was truncated.
+    """
+    query = dns.message.make_query(qname, rtype)
+    if not recursive:
+        query.flags &= ~dns.flags.RD
+    started = time.monotonic()
+    resp = await dns.asyncquery.udp(query, ip, timeout=timeout)
+    if resp.flags & dns.flags.TC:
+        resp = await dns.asyncquery.tcp(query, ip, timeout=timeout)
+    return resp, int((time.monotonic() - started) * 1000)
+
+
+def rdata_text(rtype: str, r: Any) -> str:
+    """One record as a single comparable string (trailing dots removed)."""
+    f = _format_rdata(rtype, r)
+    if isinstance(f, str):
+        return f
+    if rtype == "MX":
+        return f"{f['preference']} {f['exchange']}"
+    if rtype == "CAA":
+        return f'{f["flags"]} {f["tag"]} "{f["value"]}"'
+    if rtype == "SOA":
+        return f"{f['mname']} {f['rname']} {f['serial']}"
+    return r.to_text()
+
+
+def answer_values(resp: Any, rtype: str) -> tuple[list[str], int | None]:
+    """Sorted record strings of the requested type from a response, plus the lowest TTL."""
+    wanted = dns.rdatatype.from_text(rtype)
+    values: set[str] = set()
+    ttl = None
+    for rrset in resp.answer:
+        if rrset.rdtype == wanted:
+            ttl = rrset.ttl if ttl is None else min(ttl, rrset.ttl)
+            values.update(rdata_text(rtype, r) for r in rrset)
+    return sorted(values), ttl
+
+
+async def find_zone(domain: str) -> tuple[str | None, list[str]]:
+    """NS records live at the zone apex: www.shop.example.com -> ('example.com', [ns hosts])."""
+    for name in _candidates(domain):
+        try:
+            ns = await resolve(name, "NS")
+        except DNSLookupError:
+            continue
+        if ns:
+            return name, sorted({r.target.to_text(omit_final_dot=True).lower() for r in ns})
+    return None, []
+
+
+# ---- 3d-8. Nameserver health ----------------------------------------------------------------------------
+async def _probe_nameserver(host: str, zone: str) -> dict:
+    out: dict[str, Any] = {"host": host, "ip": None, "reachable": False, "authoritative": False,
+                           "serial": None, "rtt_ms": None, "error": None}
+    ips = [ip for ip in await _ips_of(host) if ":" not in ip and is_public_ip(ip)]
+    if not ips:
+        out["error"] = "Hostname doesn't resolve to a public IPv4 address."
+        return out
+    out["ip"] = ips[0]
+    try:
+        resp, rtt = await ask_server(ips[0], zone, "SOA", recursive=False, timeout=4)
+    except dns.exception.Timeout:
+        out["error"] = "No answer within 4 seconds."
+        return out
+    except OSError as exc:
+        out["error"] = f"Network error: {exc.strerror or exc}"
+        return out
+    out["reachable"], out["rtt_ms"] = True, rtt
+    rcode = dns.rcode.to_text(resp.rcode())
+    out["authoritative"] = bool(resp.flags & dns.flags.AA) and rcode == "NOERROR"
+    soa = [r for rrset in resp.answer if rrset.rdtype == dns.rdatatype.SOA for r in rrset]
+    if soa:
+        out["serial"] = soa[0].serial
+    if not out["authoritative"]:
+        out["error"] = f"Answered {rcode} without authority. It doesn't serve this zone (lame delegation)."
+    return out
+
+
+async def analyze_nameservers(domain: str) -> dict:
+    res: dict[str, Any] = {"status": "pass", "zone": None, "servers": [], "errors": [], "warnings": [], "notes": []}
+    zone, hosts = await find_zone(domain)
+    if not zone:
+        res["status"] = "fail"
+        res["errors"].append("No NS records were found for this domain or its parents.")
+        return res
+    res["zone"] = zone
+    res["servers"] = list(await asyncio.gather(*(_probe_nameserver(h, zone) for h in hosts[:8])))
+
+    if len(hosts) < 2:
+        res["errors"].append("Only one nameserver is listed. Use at least two, on separate networks, so the domain stays up if one fails.")
+    dead = [s["host"] for s in res["servers"] if not s["reachable"]]
+    lame = [s["host"] for s in res["servers"] if s["reachable"] and not s["authoritative"]]
+    if dead:
+        res["errors"].append(f"Not answering: {', '.join(dead)}. Resolvers that try these servers will see slow or failed lookups.")
+    if lame:
+        res["errors"].append(f"Not authoritative for {zone}: {', '.join(lame)}. Remove them from the NS records or add the zone to them.")
+    serials = {s["serial"] for s in res["servers"] if s["serial"] is not None}
+    if len(serials) > 1:
+        detail = ", ".join(f"{s['host']} = {s['serial']}" for s in res["servers"] if s["serial"] is not None)
+        res["warnings"].append(f"SOA serials differ ({detail}). Some nameservers haven't picked up the latest zone changes yet.")
+    v4 = [s["ip"] for s in res["servers"] if s["ip"]]
+    if len(v4) >= 2 and len({ip.rsplit(".", 1)[0] for ip in v4}) == 1:
+        res["warnings"].append("All nameservers share one /24 network. A single network problem could take them all down.")
+    slow = [s for s in res["servers"] if s["rtt_ms"] and s["rtt_ms"] > 500]
+    if slow:
+        res["notes"].append("Slow to answer (over 500 ms from our server): " + ", ".join(s["host"] for s in slow) + ".")
+    res["notes"].append("Checked over IPv4 from our server's region.")
+    res["status"] = _status(res["errors"], res["warnings"])
+    return res
+
+
+# ---- 3d-9. Propagation: what do public resolvers currently answer? ----------------------------------
+PROPAGATION_TYPES = ("A", "AAAA", "CNAME", "MX", "NS", "TXT", "CAA")
+PUBLIC_RESOLVERS: tuple[tuple[str, str, str], ...] = (
+    ("Cloudflare", "1.1.1.1", "Anycast"),
+    ("Google", "8.8.8.8", "Anycast"),
+    ("Quad9", "9.9.9.9", "Anycast"),
+    ("OpenDNS", "208.67.222.222", "Anycast"),
+    ("AdGuard", "94.140.14.14", "Anycast"),
+    ("Control D", "76.76.2.0", "Anycast"),
+    ("Lumen (Level 3)", "4.2.2.1", "United States"),
+    ("DNS.Watch", "84.200.69.80", "Germany"),
+)
+
+
+async def _ask_for_row(name: str, ip: str, place: str, qname: str, rtype: str, recursive: bool) -> dict:
+    row: dict[str, Any] = {"name": name, "ip": ip, "location": place, "values": [], "ttl": None,
+                           "rcode": None, "rtt_ms": None, "error": None}
+    try:
+        resp, rtt = await ask_server(ip, qname, rtype, recursive=recursive, timeout=4)
+        row["rtt_ms"], row["rcode"] = rtt, dns.rcode.to_text(resp.rcode())
+        row["values"], row["ttl"] = answer_values(resp, rtype)
+    except dns.exception.Timeout:
+        row["error"] = "No answer within 4 seconds"
+    except OSError as exc:
+        row["error"] = f"Network error: {exc.strerror or exc}"
+    return row
+
+
+def _answer_key(row: dict) -> tuple:
+    """What a row 'says', for comparison. Errors never count towards the consensus."""
+    if row["error"]:
+        return ("ERROR",)
+    if row["rcode"] != "NOERROR":
+        return (row["rcode"],)
+    return tuple(row["values"]) or ("NO RECORDS",)
+
+
+async def check_propagation(domain: str, rtype: str) -> dict:
+    zone, ns_hosts = await find_zone(domain)
+    tasks = [_ask_for_row(n, ip, place, domain, rtype, True) for n, ip, place in PUBLIC_RESOLVERS]
+    auth_task = None
+    if ns_hosts:
+        ns_ips = [ip for ip in await _ips_of(ns_hosts[0]) if ":" not in ip and is_public_ip(ip)]
+        if ns_ips:
+            auth_task = _ask_for_row(ns_hosts[0], ns_ips[0], "Authoritative", domain, rtype, False)
+    rows = list(await asyncio.gather(*tasks, *( [auth_task] if auth_task else [] )))
+    authoritative = rows.pop() if auth_task else None
+
+    answered = [r for r in rows if not r["error"]]
+    counts = Counter(_answer_key(r) for r in answered)
+    consensus = counts.most_common(1)[0][0] if counts else None
+    for r in rows:
+        r["matches"] = None if r["error"] else _answer_key(r) == consensus
+
+    differing = [r["name"] for r in rows if r["matches"] is False]
+    failed = [r["name"] for r in rows if r["error"]]
+    auth_key = _answer_key(authoritative) if authoritative else None
+    if authoritative:
+        authoritative["matches"] = None if authoritative["error"] else auth_key == consensus
+
+    if not answered:
+        status, summary = "error", "None of the resolvers answered. Try again in a minute."
+    elif differing:
+        status = "warn"
+        summary = (f"{len(differing)} of {len(answered)} resolvers show a different answer. "
+                   "They're still serving a cached older record; this clears as their copies expire (see TTL).")
+    elif authoritative and not authoritative["error"] and authoritative["matches"] is False and auth_key != ("NO RECORDS",):
+        status = "warn"
+        summary = "Every public resolver agrees, but the authoritative nameserver now says something different. The change hasn't reached these caches yet."
+    else:
+        status, summary = "pass", f"All {len(answered)} resolvers that answered return the same result."
+    return {"domain": domain, "type": rtype, "zone": zone, "status": status, "summary": summary,
+            "consensus": list(consensus) if consensus else [], "authoritative": authoritative, "resolvers": rows,
+            "failed": failed,
+            "note": "Anycast resolvers answer from their site nearest to our server, so this shows how the change looks from that region."}
+
+
+# ---- 3d-10. MTA-STS, TLS-RPT and BIMI (optional email security records) -----------------------------
+def _fetch_text(url: str, limit: int = 65536) -> tuple[int, str]:
+    """HTTPS GET with full certificate checks. Returns (status code, body text)."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=REG_HTTP_TIMEOUT, context=ssl.create_default_context()) as resp:
+        return resp.status, resp.read(limit).decode("utf-8", errors="replace")
+
+
+def _mx_pattern_matches(pattern: str, host: str) -> bool:
+    """MTA-STS mx patterns: exact host, or '*.example.com' matching exactly one extra label."""
+    pattern, host = pattern.lower().rstrip("."), host.lower().rstrip(".")
+    if pattern.startswith("*."):
+        return host.endswith(pattern[1:]) and host.count(".") == pattern.count(".")
+    return pattern == host
+
+
+async def analyze_mail_security(domain: str) -> dict:
+    res: dict[str, Any] = {"status": "info", "mta_sts": {"found": False}, "tls_rpt": {"found": False},
+                           "bimi": {"found": False}, "errors": [], "warnings": [], "notes": []}
+    mta_txt, rpt_txt, bimi_txt = await asyncio.gather(
+        get_txt(f"_mta-sts.{domain}"), get_txt(f"_smtp._tls.{domain}"), get_txt(f"default._bimi.{domain}"))
+
+    # --- MTA-STS: a TXT record announces a policy; the policy itself is a file served over HTTPS
+    mta = [t for t in mta_txt if t.lower().replace(" ", "").startswith("v=stsv1")]
+    if mta:
+        sts: dict[str, Any] = {"found": True, "record": mta[0], "id": _parse_tag_list(mta[0]).get("id"),
+                               "policy_url": f"https://mta-sts.{domain}/.well-known/mta-sts.txt", "policy": None}
+        res["mta_sts"] = sts
+        host_ips = await _ips_of(f"mta-sts.{domain}")
+        if not host_ips:
+            res["errors"].append(f"MTA-STS is announced but mta-sts.{domain} doesn't resolve, so senders can't fetch the policy.")
+        elif not all(is_public_ip(ip) for ip in host_ips):
+            res["errors"].append(f"mta-sts.{domain} points to a private address, so senders can't fetch the policy.")
+        else:
+            try:
+                code, body = await asyncio.wait_for(run_in_threadpool(_fetch_text, sts["policy_url"]), timeout=12)
+                policy: dict[str, Any] = {"mx": []}
+                for line in body.splitlines():
+                    if ":" in line:
+                        k, v = (x.strip() for x in line.split(":", 1))
+                        if k.lower() == "mx":
+                            policy["mx"].append(v)
+                        else:
+                            policy[k.lower()] = v
+                sts["policy"] = policy
+                if policy.get("version") != "STSv1":
+                    res["errors"].append("The MTA-STS policy file doesn't start with 'version: STSv1'.")
+                mode = policy.get("mode", "").lower()
+                if mode not in ("enforce", "testing", "none"):
+                    res["errors"].append("The MTA-STS policy has no valid mode (enforce, testing or none).")
+                elif mode == "testing":
+                    res["notes"].append("MTA-STS is in testing mode: failures are reported but mail is still delivered. Switch to enforce once TLS reports look clean.")
+                elif mode == "none":
+                    res["warnings"].append("MTA-STS mode is 'none', so the policy isn't protecting anything.")
+                try:
+                    if int(policy.get("max_age", "0")) < 86400:
+                        res["warnings"].append("MTA-STS max_age is under 1 day. Senders will re-fetch the policy too often; a week or more is typical.")
+                except ValueError:
+                    res["errors"].append("MTA-STS max_age isn't a number.")
+                if not policy["mx"]:
+                    res["errors"].append("The MTA-STS policy lists no mx: lines, so no mail server is allowed.")
+            except urllib.error.HTTPError as exc:
+                res["errors"].append(f"The MTA-STS policy URL returned HTTP {exc.code}. It must serve the policy file at {sts['policy_url']}.")
+            except (ssl.SSLError, ssl.CertificateError) as exc:
+                res["errors"].append(f"The MTA-STS policy host has an invalid certificate ({getattr(exc, 'reason', None) or exc}). Senders will ignore the policy.")
+            except Exception as exc:  # timeout, connection refused, etc.
+                res["errors"].append(f"The MTA-STS policy couldn't be fetched ({type(exc).__name__}).")
+
+    # --- TLS-RPT: where to send reports about TLS failures
+    rpt = [t for t in rpt_txt if t.lower().replace(" ", "").startswith("v=tlsrptv1")]
+    if rpt:
+        rua = [x.strip() for x in _parse_tag_list(rpt[0]).get("rua", "").split(",") if x.strip()]
+        res["tls_rpt"] = {"found": True, "record": rpt[0], "rua": rua}
+        if not rua or not all(x.lower().startswith(("mailto:", "https://")) for x in rua):
+            res["errors"].append("TLS-RPT needs rua= with mailto: or https:// destinations.")
+    elif mta:
+        res["warnings"].append(f"MTA-STS is set up without TLS-RPT. Add a TXT record at _smtp._tls.{domain} so you hear about delivery failures.")
+
+    # --- BIMI: brand logo shown next to your mail in supporting inboxes
+    bimi = [t for t in bimi_txt if t.lower().replace(" ", "").startswith("v=bimi1")]
+    if bimi:
+        tags = _parse_tag_list(bimi[0])
+        logo, vmc = tags.get("l", ""), tags.get("a", "")
+        res["bimi"] = {"found": True, "record": bimi[0], "logo_url": logo or None, "certificate_url": vmc or None}
+        if logo and not (logo.lower().startswith("https://") and logo.lower().endswith(".svg")):
+            res["errors"].append("BIMI l= must be an https:// URL ending in .svg (SVG Tiny PS format).")
+        if not vmc:
+            res["notes"].append("BIMI has no a= certificate (VMC or CMC). Gmail and Apple Mail only show the logo with one.")
+
+    if not (mta or rpt or bimi):
+        res["notes"].append("None of these optional protections are set up. MTA-STS with TLS-RPT is worth adding if you receive sensitive mail.")
+        return res
+    res["status"] = _status(res["errors"], res["warnings"])
+    return res
+
+
+def cross_check_mail_security(sec: dict, mail: dict, dmarc: dict) -> None:
+    """Checks that need other sections: MTA-STS must cover every MX; BIMI needs an enforcing DMARC policy."""
+    policy = (sec.get("mta_sts") or {}).get("policy") or {}
+    if policy.get("mx"):
+        uncovered = [m["host"] for m in (mail.get("mx") or []) if not m.get("implicit")
+                     and not any(_mx_pattern_matches(p, m["host"]) for p in policy["mx"])]
+        if uncovered:
+            sec["errors"].append(f"These MX hosts aren't in the MTA-STS policy, so enforcing senders will refuse to deliver to them: {', '.join(uncovered)}.")
+    if (sec.get("bimi") or {}).get("found"):
+        if dmarc.get("policy") not in ("quarantine", "reject") or dmarc.get("pct", 100) < 100:
+            sec["errors"].append("BIMI only works with DMARC at p=quarantine or p=reject and pct=100. The logo won't show yet.")
+    if sec.get("status") != "info":
+        sec["status"] = _status(sec["errors"], sec["warnings"])
+
+
+# ---- 3d-11. Page speed (Google PageSpeed Insights / Lighthouse) ------------------------------------
+PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+LAB_METRICS = (("largest-contentful-paint", "Largest Contentful Paint", "LCP"),
+               ("total-blocking-time", "Total Blocking Time", "TBT"),
+               ("cumulative-layout-shift", "Cumulative Layout Shift", "CLS"),
+               ("first-contentful-paint", "First Contentful Paint", "FCP"),
+               ("speed-index", "Speed Index", "SI"))
+FIELD_METRICS = (("LARGEST_CONTENTFUL_PAINT_MS", "Largest Contentful Paint", "LCP", "ms"),
+                 ("INTERACTION_TO_NEXT_PAINT", "Interaction to Next Paint", "INP", "ms"),
+                 ("CUMULATIVE_LAYOUT_SHIFT_SCORE", "Cumulative Layout Shift", "CLS", "cls"),
+                 ("FIRST_CONTENTFUL_PAINT_MS", "First Contentful Paint", "FCP", "ms"),
+                 ("EXPERIMENTAL_TIME_TO_FIRST_BYTE", "Time to First Byte", "TTFB", "ms"))
+
+
+def _plain(markdown: str) -> str:
+    """Lighthouse descriptions are Markdown with '[Learn more](...)' links: keep just the sentence."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", markdown or "")
+    return re.sub(r"\s*Learn (more|how).*$", "", text).strip()
+
+
+def run_pagespeed(url: str, strategy: str) -> dict:
+    """Blocking: ask Google to run Lighthouse on `url` and condense the (huge) result."""
+    params = {"url": url, "strategy": strategy, "category": "performance", "locale": "en"}
+    if PAGESPEED_API_KEY:
+        params["key"] = PAGESPEED_API_KEY
+    req = urllib.request.Request(f"{PSI_ENDPOINT}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=55) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+
+    lh = data.get("lighthouseResult") or {}
+    audits = lh.get("audits") or {}
+    perf = ((lh.get("categories") or {}).get("performance") or {}).get("score")
+
+    lab = []
+    for key, name, short in LAB_METRICS:
+        a = audits.get(key) or {}
+        lab.append({"id": short, "name": name, "value": a.get("numericValue"), "display": a.get("displayValue"), "score": a.get("score")})
+
+    exp = data.get("loadingExperience") or {}
+    field = []
+    for key, name, short, unit in FIELD_METRICS:
+        m = (exp.get("metrics") or {}).get(key)
+        if m:
+            p75 = m.get("percentile")
+            if unit == "cls" and p75 is not None:
+                p75 = p75 / 100  # the API reports CLS × 100
+            field.append({"id": short, "name": name, "p75": p75, "unit": unit, "category": m.get("category")})
+
+    opportunities = []
+    for a in audits.values():
+        details = a.get("details") or {}
+        savings = details.get("overallSavingsMs") or (a.get("metricSavings") or {}).get("LCP") or 0
+        if a.get("score") is not None and a["score"] < 0.9 and savings >= 100:
+            opportunities.append({"title": a.get("title"), "display": a.get("displayValue"),
+                                  "savings_ms": int(savings), "description": _plain(a.get("description", ""))})
+    opportunities.sort(key=lambda o: o["savings_ms"], reverse=True)
+
+    def num(key: str) -> float | None:
+        return (audits.get(key) or {}).get("numericValue")
+
+    requests_count = len(((audits.get("network-requests") or {}).get("details") or {}).get("items") or []) or None
+    screenshot = ((audits.get("final-screenshot") or {}).get("details") or {}).get("data")
+    return {
+        "url": url, "strategy": strategy,
+        "final_url": lh.get("finalDisplayedUrl") or lh.get("finalUrl") or url,
+        "score": round(perf * 100) if isinstance(perf, (int, float)) else None,
+        "lab": lab, "field": field,
+        "field_scope": "origin" if exp.get("origin_fallback") else "page",
+        "field_overall": exp.get("overall_category"),
+        "opportunities": opportunities[:6],
+        "diagnostics": {"server_response_ms": num("server-response-time"), "total_bytes": num("total-byte-weight"),
+                        "requests": requests_count, "dom_size": num("dom-size")},
+        "screenshot": screenshot if isinstance(screenshot, str) and screenshot.startswith("data:image/") else None,
+        "lighthouse_version": lh.get("lighthouseVersion"), "fetched_at": lh.get("fetchTime"),
+        "runtime_error": (lh.get("runtimeError") or {}).get("message"),
+    }
+
+
+def normalize_page_url(raw: str) -> str:
+    """Accept 'example.com', 'https://example.com/page' etc.; return a clean https/http URL or raise ValueError."""
+    raw = raw.strip()
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I):
+        raw = "https://" + raw
+    parts = urllib.parse.urlsplit(raw)
+    if parts.scheme.lower() not in ("http", "https"):
+        raise ValueError("Only http:// and https:// pages can be tested.")
+    host = normalize_domain(parts.hostname or "")
+    port = f":{parts.port}" if parts.port else ""
+    return urllib.parse.urlunsplit((parts.scheme.lower(), host + port, parts.path or "/", parts.query, ""))
+
+
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
 def _decode(msg: Any) -> str:
     return msg.decode("utf-8", errors="replace") if isinstance(msg, bytes) else str(msg)
@@ -1562,17 +1968,22 @@ async def analyze(response: Response,
     log.info("Analysing %s", clean)
 
     # All sections run concurrently; total time ≈ the slowest one.
-    dns_res, reg_res, hosting_res, spf_res, dmarc_res, dkim_res, mail_res, tls_res, caa_res = await asyncio.gather(
+    (dns_res, reg_res, ns_res, hosting_res, spf_res, dmarc_res, dkim_res,
+     mail_res, mailsec_res, tls_res, caa_res) = await asyncio.gather(
         _safe("DNS", lookup_dns_records(clean), 15),
         _safe("Registration", analyze_registration(clean), 30),
+        _safe("Nameservers", analyze_nameservers(clean), 15),
         _safe("Hosting", analyze_hosting(clean), 15),
         _safe("SPF", analyze_spf(clean), 20),
         _safe("DMARC", analyze_dmarc(clean), 15),
         _safe("DKIM", analyze_dkim(clean), 15),
         _safe("Mail/SMTP", analyze_mail(clean), 45),
+        _safe("Mail security", analyze_mail_security(clean), 20),
         _safe("TLS", analyze_tls(clean), 25),
         _safe("CAA", analyze_caa(clean), 10),
     )
+    if mailsec_res.get("status") != "error":
+        cross_check_mail_security(mailsec_res, mail_res, dmarc_res)
 
     # CAA belongs with the certificate: show it in the SSL section and cross-check the issuer.
     tls_res["caa"] = caa_res
@@ -1602,12 +2013,62 @@ async def analyze(response: Response,
         "dmarc": dmarc_res,
         "dkim": dkim_res,
         "mail": mail_res,
+        "nameservers": ns_res,
+        "mail_security": mailsec_res,
         "tls": tls_res,
     }
     _cache_set(clean, result)
     # A section that errored (timeout etc.) may succeed on retry, so cache those results briefly.
     had_error = any(isinstance(v, dict) and v.get("status") == "error" for v in result.values())
     _set_cdn_cache(response, 30 if had_error else 300)
+    return result
+
+
+@app.get("/api/v1/propagation")
+async def propagation(response: Response,
+                      domain: str = Query(..., min_length=1, max_length=300),
+                      type: str = Query("A", alias="type", max_length=8)) -> dict:
+    """Ask 8 public resolvers and the authoritative nameserver for one record type, and compare."""
+    clean = _clean_domain(domain)
+    rtype = type.upper()
+    if rtype not in PROPAGATION_TYPES:
+        raise HTTPException(status_code=400, detail=f"Record type must be one of {', '.join(PROPAGATION_TYPES)}.")
+    try:
+        res = await asyncio.wait_for(check_propagation(clean, rtype), timeout=20)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The resolvers took too long to answer. Try again.") from exc
+    _set_cdn_cache(response, 30)  # short: people re-run this while waiting for a change to spread
+    return res
+
+
+@app.get("/api/v1/speed")
+async def speed(response: Response,
+                url: str = Query(..., min_length=3, max_length=2000),
+                strategy: str = Query("mobile", pattern="^(mobile|desktop)$")) -> dict:
+    """Run Google PageSpeed Insights (Lighthouse) for one page. Takes 15-45 seconds."""
+    try:
+        page = normalize_page_url(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        result = await asyncio.wait_for(run_in_threadpool(run_pagespeed, page, strategy), timeout=57)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The speed test took longer than a minute. Slow pages sometimes do; try again.") from exc
+    except urllib.error.HTTPError as exc:
+        try:
+            message = json.loads(exc.read().decode("utf-8", errors="replace")).get("error", {}).get("message", "")
+        except Exception:
+            message = ""
+        if exc.code == 429:
+            detail = "Google's speed-test quota is used up for now. Try again later" + ("" if PAGESPEED_API_KEY else ", or add a PageSpeed API key") + "."
+        elif "FAILED_DOCUMENT_REQUEST" in message or "ERRORED_DOCUMENT_REQUEST" in message:
+            detail = "Google couldn't load that page. Check the address and that the site is up."
+        else:
+            detail = f"The speed test failed: {message or f'HTTP {exc.code}'}"
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="Couldn't reach Google's speed-test service. Try again shortly.") from exc
+    _set_cdn_cache(response, 3600)  # an hour: the same page tested twice in a row gives the cached result
     return result
 
 
