@@ -1,146 +1,112 @@
-# DigDNS
+# VdigDNS
 
-Open-source DNS and email diagnostics in your browser. It runs on Vercel and checks:
+VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one report covering:
 
-- DNS records: A, AAAA, MX, TXT, CNAME, NS, SOA, SRV
-- SPF: syntax, and the strict 10-lookup limit followed through every include
-- DMARC: policy, reporting addresses, alignment
-- Reverse DNS (PTR) of MX servers, with forward confirmation
-- SSL/TLS certificate: issuer, expiry, days left, SANs
-- SMTP handshake: the code is included but switched off on Vercel, because Vercel blocks outbound port 25
+- **Registration:** registrar, created and expiry dates, registry locks, DNSSEC, and registry nameservers checked against live DNS. Uses RDAP, with classic WHOIS as a fallback.
+- **Hosting:** which server or network serves the website, from reverse DNS and IP ownership (AS number).
+- **DNS records:** A, AAAA, MX, TXT, CNAME, NS, SOA, CAA and common SRV names.
+- **SPF:** syntax, and the 10-lookup limit followed through every include.
+- **DKIM:** keys at 30 common selectors and their strength, plus a single-selector check.
+- **DMARC:** policy, reporting addresses and alignment.
+- **Mail:** MX servers, their reverse DNS, and the email provider in use.
+- **SSL:** issuer, expiry, covered names, and the CAA records that say which authorities may issue.
+
+Plus an **SPF builder** with a live lookup count, and a **DMARC builder** with a rollout guide.
+
+Live at **https://dig.sujaiprojects.stream**
+
+---
+
+## How it's built
+
+**A serverless Python API with a static frontend, on Vercel.**
 
 ```
-Browser ──► https://digdns.sujaiprojects.stream
-              ├─ /              → public/index.html   (Vercel CDN)
-              └─ /api/v1/...    → main.py (FastAPI)    (Vercel Function)
+Browser ──► Vercel edge (CDN) ──┬─► public/index.html            static page, served from the CDN
+                                └─► main.py (FastAPI function)    the API
+                                       ├─► Public DNS (1.1.1.1, 8.8.8.8)
+                                       ├─► Team Cymru               who owns an IP
+                                       ├─► RDAP / WHOIS registries  domain registration
+                                       └─► the checked site :443    SSL certificate
 ```
 
-Because the page and the API live on the same domain, there is no CORS setup and no server to maintain.
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.12, FastAPI (async) |
+| Libraries | `dnspython` for DNS, `cryptography` for certificates and DKIM keys, standard library for TLS, HTTP and WHOIS |
+| Hosting | Vercel serverless function, plus Vercel CDN caching |
+| Frontend | One HTML file: vanilla JavaScript and Tailwind CSS v4 (browser build), no build step |
+| DNS | Cloudflare (`dig` CNAME → Vercel, DNS only) |
+| Deploys | Push to GitHub `main` and Vercel deploys automatically |
+
+### Design decisions
+
+- **Everything runs in parallel.** The report's nine checks start together with `asyncio.gather`, so a report takes about as long as the slowest check (usually 1–3 s).
+- **Every check has its own deadline.** If one part times out, the rest of the report still returns and that section shows "Error".
+- **"No record" is kept separate from "lookup failed".** A flaky resolver never shows up as a false "No SPF record".
+- **SSRF protection.** The API never connects to private, loopback or reserved IPs.
+- **XSS protection.** DNS data is controlled by the domain owner, so the page inserts every value as text (`textContent`), never as HTML.
+- **CDN caching.** Reports are cached at the edge for 5 minutes (30 s if a check errored). Registration-only lookups are cached for 1 hour.
+- **Privacy.** Registrant contact details are never returned, even when a registry publishes them.
+- **SMTP handshake is off.** Vercel blocks outbound port 25. The code is kept and can be switched on with `ENABLE_SMTP=true` on a host that allows port 25.
+
+## API
+
+All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
+
+| Endpoint | Purpose |
+|---|---|
+| `/api/v1/analyze?domain=example.com` | The full report |
+| `/api/v1/whois?domain=example.com` | Registration only (RDAP, falling back to WHOIS) |
+| `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
+| `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
+| `/api/v1/health` | Liveness check |
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `main.py` | The FastAPI backend. Vercel finds `app` here automatically. |
-| `requirements.txt` | Python packages Vercel installs |
-| `public/index.html` | The whole frontend (Tailwind + vanilla JS) |
-| `vercel.json` | Lets the function run up to 60 s |
-| `.python-version` | Asks Vercel for Python 3.12 |
+| `main.py` | The whole backend. Vercel finds the FastAPI `app` here. |
+| `requirements.txt` | Python dependencies |
+| `public/index.html` | The whole frontend |
+| `vercel.json` | Allows the function to run for up to 60 s |
+| `.python-version` | Python 3.12 |
 
----
+## Run it locally
 
-## Step 1 — Put the code on GitHub (no Git install needed)
-
-1. Unzip `digdns-vercel.zip` on your computer.
-2. Go to https://github.com and sign up, or log in.
-3. Click **+** (top right) → **New repository**.
-   - **Repository name:** `digdns`
-   - **Visibility:** Public
-   - Leave every "Add …" box **unticked**.
-   - Click **Create repository**.
-4. On the next page, click the **uploading an existing file** link.
-5. Open the unzipped `digdns-vercel` folder. Select **everything inside it**, not the folder itself, and drag it onto the GitHub page. That means:
-   - `main.py`
-   - `requirements.txt`
-   - `vercel.json`
-   - `README.md`
-   - the `public` folder
-   - `.python-version` and `.gitignore`
-6. Make sure the hidden files come along:
-   - **Windows:** in File Explorer, go to **View → Show → Hidden items**.
-   - **Mac:** in Finder, press `Cmd + Shift + .`
-   - If `.python-version` gets left out, the app still works on Vercel's default Python.
-7. Scroll down and click **Commit changes**.
-
-Check the result: the repo's main page should list `main.py` and a `public` folder at the top level. If you see a single `digdns-vercel` folder instead, you dragged the folder rather than its contents. Delete the repo and redo step 5.
-
-## Step 2 — Create a Vercel account
-
-1. Go to https://vercel.com/signup.
-2. Choose the **Hobby** plan (free, for personal and non-commercial projects).
-3. Click **Continue with GitHub** and authorise it. Using GitHub sign-in means Vercel can see your repos straight away.
-
-## Step 3 — Deploy
-
-1. In the Vercel dashboard, click **Add New… → Project**.
-2. Find `digdns` in the list and click **Import**.
-   - If it's missing, click **Adjust GitHub App Permissions** and give Vercel access to the repo.
-3. On the configure screen:
-   - **Framework Preset:** Vercel should detect **FastAPI** by itself. If it shows **Other**, leave it as is.
-   - **Root Directory:** `./`
-   - Leave the build and output settings and the environment variables empty.
-4. Click **Deploy** and wait about a minute.
-
-## Step 4 — Test the vercel.app address
-
-Vercel gives you a URL like `https://digdns-xxxx.vercel.app`. Open these:
-
-| URL | Expected result |
-|---|---|
-| `https://<your-url>.vercel.app/api/v1/health` | JSON with `"status":"ok"` |
-| `https://<your-url>.vercel.app/` | The DigDNS page. Search `google.com`. |
-| `https://<your-url>.vercel.app/api/v1/docs` | Interactive API docs |
-
-If something fails, open the project in Vercel → **Logs** (or **Deployments → the latest one → Build Logs**) and send me the red lines.
-
-## Step 5 — Use your own domain: digdns.sujaiprojects.stream
-
-**In Vercel:**
-
-1. Open the project → **Settings → Domains**.
-2. Enter `digdns.sujaiprojects.stream` and click **Add**.
-3. Vercel shows a **CNAME** record to create. Copy the **Value** exactly as shown, for example something ending in `vercel-dns.com`.
-
-**In Cloudflare** (sujaiprojects.stream → **DNS → Records**):
-
-1. Click **Add record** and fill in:
-
-   | Type | Name | Target | Proxy status |
-   |---|---|---|---|
-   | CNAME | `digdns` | *the value Vercel showed you* | **DNS only (grey cloud)** |
-
-2. Click **Save**.
-3. Delete the old **`api`** A record (`192.245.157.101`). Nothing uses it anymore.
-
-Back in Vercel, the domain changes to **Valid Configuration** within a few minutes, and Vercel issues the HTTPS certificate automatically. Then open https://digdns.sujaiprojects.stream.
-
-> Keep the record grey (DNS only). If it's orange, Cloudflare and Vercel both try to handle HTTPS, and you get certificate errors or redirect loops.
-
-## Updating the app later
-
-Edit a file on GitHub: open it, click the ✏️ pencil, then **Commit changes**. Vercel redeploys automatically within about a minute. Every past deployment stays in **Deployments**, and **Promote / Instant Rollback** restores an old one.
-
-## Optional — Rate limiting
-
-Every lookup does real network work, so someone hammering it costs you function time.
-
-To add a limit, go to the Vercel project → **Firewall** → **Configure** → add a **Rate Limit** rule:
-
-- **If:** request path starts with `/api/v1/analyze`
-- **Then:** allow 10 requests per 60 s per IP
-
-How many rules you get depends on your plan.
-
-## Run it on your own computer (optional)
-
-This needs Python 3.10 or newer.
+You need Python 3.10 or newer.
 
 ```bash
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Then:
+- **API:** open http://127.0.0.1:8000/api/v1/analyze?domain=example.com
+- **Frontend:** set `const API_BASE = "http://127.0.0.1:8000";` near the top of the script in `public/index.html`, then open the file in a browser. Set it back to `""` before deploying.
 
-- **API:** http://127.0.0.1:8000/api/v1/analyze?domain=example.com
-- **Frontend:** in `public/index.html`, temporarily set `const API_BASE = "http://127.0.0.1:8000";` and open the file in a browser.
+## Configuration (optional environment variables)
 
-## Turning the SMTP handshake back on
+Set these in Vercel under **Project → Settings → Environment Variables**.
 
-Only do this on a host that allows outbound port 25, such as a VPS where you've tested it. Set these environment variables:
+| Variable | Default | Meaning |
+|---|---|---|
+| `DNS_NAMESERVERS` | `1.1.1.1,8.8.8.8` | Resolvers used for every lookup |
+| `DNS_TIMEOUT` / `DNS_LIFETIME` | `3` / `6` | Seconds per server and per query |
+| `TLS_TIMEOUT` | `8` | Seconds for the certificate check |
+| `ENABLE_DOCS` | `true` | Serve `/api/v1/docs` |
+| `ENABLE_SMTP` | `false` | SMTP handshake (needs outbound port 25, which Vercel blocks) |
 
-- `ENABLE_SMTP=true`
-- `SMTP_HELO_NAME=<hostname whose PTR matches the server IP>`
-- `SMTP_MAIL_FROM=probe@yourdomain`
+## Deploying changes
 
-The probe only ever asks about `postmaster@<domain>` and never sends `DATA`, so no email is ever delivered. Keep it that way: letting users choose the recipient turns this into an address-harvesting tool and gets the server's IP blacklisted.
+1. Edit or upload the file on GitHub.
+   - `main.py` goes at the top level.
+   - `index.html` goes inside the `public` folder.
+2. Commit. Vercel redeploys in about a minute.
+3. If something breaks, go to **Vercel → Deployments**, pick the last good deployment, and click **Instant Rollback**.
+
+## Known limitations
+
+- **No rate limiting yet.** Add a Vercel Firewall rule (for example, 10 requests per minute per IP on `/api/`) before promoting the tool publicly.
+- **Tailwind runs as the browser build,** which generates CSS on each page load. A one-time compiled stylesheet would load faster.
+- **DKIM under a custom selector** can only be found with the selector check, by reading `s=` from a sent email's `DKIM-Signature` header.
+- **Hosting detection** names the network or CDN. Behind Cloudflare and similar CDNs, the real origin server can't be seen from DNS.

@@ -1,5 +1,5 @@
 """
-DigDNS API — DNS, email-authentication, SMTP and TLS diagnostics.
+VdigDNS API — DNS, domain registration, email-authentication, SMTP and TLS diagnostics.
 
 Deployment: Vercel. Vercel finds the FastAPI object named `app` in this file
 (main.py at the repo root) and runs it as a serverless function. Files in
@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -42,6 +43,8 @@ import smtplib
 import socket
 import ssl
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
@@ -783,7 +786,7 @@ async def analyze_dkim(domain: str) -> dict:
 
     # A random selector should never exist. If it does, the domain answers every
     # name (wildcard TXT) and the selector scan below would be meaningless.
-    probe_sel = "digdns-probe-" + secrets.token_hex(4)
+    probe_sel = "vdigdns-probe-" + secrets.token_hex(4)
     probe, *found = await asyncio.gather(safe_check(probe_sel), *(safe_check(s) for s in DKIM_SELECTORS))
     if probe:
         res["wildcard"] = True
@@ -925,6 +928,275 @@ def detect_providers(domain: str, mail: dict, spf: dict) -> dict:
         if name and name not in senders and name not in inbound:
             senders.append(name)
     return {"inbound": inbound, "senders": senders}
+
+
+# ---- 3d-6. Domain registration: RDAP first, classic WHOIS as fallback -------------------------------
+# RDAP is WHOIS's modern replacement: the same registry data as JSON over HTTPS.
+# ICANN dropped the port-43 WHOIS requirement for gTLDs (.com, .net, .stream...)
+# in January 2025, so RDAP is the reliable path for those. Many country-code
+# TLDs (.in, .uk, .de...) still only run port-43 WHOIS, hence the fallback.
+# Registrant contact details are deliberately NOT returned: they're mostly
+# redacted for privacy anyway, and a public tool shouldn't republish them.
+RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"   # IANA's official TLD -> RDAP server list
+REG_HTTP_TIMEOUT = 8.0
+USER_AGENT = "VdigDNS/1.0 (+https://dig.sujaiprojects.stream)"
+_rdap_bootstrap: dict[str, Any] = {"at": 0.0, "map": {}}
+
+
+def _http_get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"Accept": "application/rdap+json, application/json", "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=REG_HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read(2_000_000).decode("utf-8", errors="replace"))
+
+
+def _rdap_base_for(tld: str) -> str | None:
+    """RDAP server for a TLD, from IANA's bootstrap file (cached for a day per instance)."""
+    now = time.monotonic()
+    if not _rdap_bootstrap["map"] or now - _rdap_bootstrap["at"] > 86400:
+        data = _http_get_json(RDAP_BOOTSTRAP_URL)
+        mapping: dict[str, list[str]] = {}
+        for tlds, urls in data.get("services", []):
+            for t in tlds:
+                mapping[t.lower()] = urls
+        _rdap_bootstrap.update(at=now, map=mapping)
+    urls = _rdap_bootstrap["map"].get(tld.lower()) or []
+    base = next((u for u in urls if u.startswith("https://")), urls[0] if urls else None)
+    return (base if base.endswith("/") else base + "/") if base else None
+
+
+def _candidates(domain: str) -> list[str]:
+    """www.shop.example.com -> [www.shop.example.com, shop.example.com, example.com] (max 3 tries)."""
+    labels = domain.split(".")
+    return [".".join(labels[i:]) for i in range(len(labels) - 1)][:3]
+
+
+def _vcard(entity: dict, field: str) -> str | None:
+    """Pull one field (fn, email, tel) out of an RDAP entity's jCard."""
+    try:
+        for item in entity["vcardArray"][1]:
+            if item[0] == field and isinstance(item[3], str):
+                return item[3]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return None
+
+
+_DATE_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%Y %H:%M:%S", "%Y.%m.%d", "%d.%m.%Y", "%Y/%m/%d", "%d/%m/%Y")
+
+
+def _parse_date(raw: str | None) -> str | None:
+    """Registries format dates a dozen ways; normalise to ISO 8601 (UTC) or None."""
+    if not raw:
+        return None
+    s = raw.strip().split(" (")[0]
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        dt = None
+        for candidate in (s, s.split()[0]):
+            for fmt in _DATE_FORMATS:
+                try:
+                    dt = datetime.strptime(candidate, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt:
+                break
+    if not dt:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).isoformat()
+
+
+def _parse_rdap(name: str, d: dict, server: str) -> dict:
+    events = {e.get("eventAction"): e.get("eventDate") for e in d.get("events", []) if isinstance(e, dict)}
+    registrar = iana_id = abuse_email = None
+    for ent in d.get("entities", []) or []:
+        if "registrar" in (ent.get("roles") or []):
+            registrar = _vcard(ent, "fn")
+            iana_id = next((p.get("identifier") for p in ent.get("publicIds", []) or [] if "IANA" in str(p.get("type", ""))), None)
+            for sub in ent.get("entities", []) or []:
+                if "abuse" in (sub.get("roles") or []):
+                    abuse_email = _vcard(sub, "email")
+    return {
+        "domain": (d.get("ldhName") or name).lower(),
+        "registrar": registrar, "registrar_iana_id": iana_id, "abuse_email": abuse_email,
+        "created": _parse_date(events.get("registration")),
+        "updated": _parse_date(events.get("last changed")),
+        "expires": _parse_date(events.get("expiration")),
+        "statuses": [str(s) for s in d.get("status", []) or []],
+        "nameservers": sorted({(n.get("ldhName") or "").lower().rstrip(".") for n in d.get("nameservers", []) or [] if n.get("ldhName")}),
+        "dnssec": (d.get("secureDNS") or {}).get("delegationSigned"),
+        "source": "RDAP", "server": server,
+    }
+
+
+def rdap_lookup(domain: str) -> dict | None:
+    """Blocking. Returns parsed data, {'not_found': True}, or None if the TLD has no RDAP service."""
+    base = _rdap_base_for(domain.rsplit(".", 1)[-1])
+    if not base:
+        return None
+    for name in _candidates(domain):
+        try:
+            return _parse_rdap(name, _http_get_json(f"{base}domain/{name}"), base)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue  # e.g. a subdomain: try the parent name
+            raise
+    return {"not_found": True, "source": "RDAP", "server": base}
+
+
+def _whois_query(server: str, query: str) -> str:
+    """Classic WHOIS: open TCP port 43, send the query, read until the server closes."""
+    with socket.create_connection((server, 43), timeout=REG_HTTP_TIMEOUT) as sock:
+        sock.settimeout(REG_HTTP_TIMEOUT)
+        sock.sendall((query + "\r\n").encode("idna" if not query.isascii() else "ascii"))
+        chunks, total = [], 0
+        while total < 200_000:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+_WHOIS_NOT_FOUND = re.compile(r"no match|not found|no data found|no entries found|status:\s*(free|available)|is available for", re.I)
+
+
+def _parse_whois_text(name: str, text: str, server: str) -> dict:
+    def first(*labels: str) -> str | None:
+        for label in labels:
+            m = re.search(rf"^\s*{label}\s*:\s*(.+?)\s*$", text, re.I | re.M)
+            if m and m.group(1):
+                return m.group(1)
+        return None
+
+    statuses = [s.split()[0] for s in re.findall(r"^\s*(?:Domain Status|status)\s*:\s*(.+?)\s*$", text, re.I | re.M)]
+    nameservers = re.findall(r"^\s*(?:Name Server|nserver|Nameservers?|Host Name)\s*:\s*(\S+)", text, re.I | re.M)
+    dnssec = first("DNSSEC")
+    return {
+        "domain": name,
+        "registrar": first("Registrar", "Registrar Name", "Sponsoring Registrar", "registrar"),
+        "registrar_iana_id": first("Registrar IANA ID"),
+        "abuse_email": first("Registrar Abuse Contact Email"),
+        "created": _parse_date(first("Creation Date", "Created On", "Created", "Registered on", "Registration Time", "created")),
+        "updated": _parse_date(first("Updated Date", "Last Modified", "Last Updated", "changed")),
+        "expires": _parse_date(first("Registry Expiry Date", "Registrar Registration Expiration Date", "Expiry Date",
+                                     "Expiration Date", "Expires On", "Expiration Time", "paid-till", "expire")),
+        "statuses": statuses,
+        "nameservers": sorted({n.lower().rstrip(".") for n in nameservers}),
+        "dnssec": None if dnssec is None else not dnssec.lower().startswith("unsigned"),
+        "source": "WHOIS", "server": server,
+    }
+
+
+def whois43_lookup(domain: str) -> dict | None:
+    """Blocking. Ask IANA which WHOIS server handles the TLD, then ask that server."""
+    iana = _whois_query("whois.iana.org", domain.rsplit(".", 1)[-1])
+    m = re.search(r"^(?:refer|whois):\s*(\S+)", iana, re.M | re.I)
+    if not m:
+        return None
+    server = m.group(1).strip()
+    for name in _candidates(domain):
+        text = _whois_query(server, name)
+        if _WHOIS_NOT_FOUND.search(text) or len(text.strip()) < 40:
+            continue
+        return _parse_whois_text(name, text, server)
+    return {"not_found": True, "source": "WHOIS", "server": server}
+
+
+# Registry status codes -> plain English. "Bad" ones mean the domain is in trouble.
+STATUS_MEANINGS: dict[str, tuple[str, str]] = {
+    "clienttransferprohibited": ("Transfer locked", "ok"),
+    "servertransferprohibited": ("Registry transfer lock", "ok"),
+    "clientdeleteprohibited": ("Delete locked", "ok"),
+    "serverdeleteprohibited": ("Registry delete lock", "ok"),
+    "clientupdateprohibited": ("Update locked", "ok"),
+    "serverupdateprohibited": ("Registry update lock", "ok"),
+    "clientrenewprohibited": ("Renewal locked", "warn"),
+    "active": ("Active", "ok"), "ok": ("Active", "ok"),
+    "addperiod": ("Newly registered", "ok"), "autorenewperiod": ("Auto-renew grace period", "warn"),
+    "renewperiod": ("Recently renewed", "ok"), "transferperiod": ("Recently transferred", "ok"),
+    "pendingtransfer": ("Transfer in progress", "warn"),
+    "inactive": ("No nameservers set", "bad"),
+    "clienthold": ("On hold, not resolving", "bad"), "serverhold": ("Registry hold, not resolving", "bad"),
+    "redemptionperiod": ("Expired, in redemption", "bad"), "pendingdelete": ("Pending deletion", "bad"),
+    "pendingrestore": ("Restore in progress", "warn"),
+}
+
+
+def _status_key(s: str) -> str:
+    return re.sub(r"[\s_\-]", "", s.split("http")[0]).lower()  # "client transfer prohibited" == "clientTransferProhibited"
+
+
+async def analyze_registration(domain: str) -> dict:
+    res: dict[str, Any] = {"status": "info", "found": False, "errors": [], "warnings": [], "notes": []}
+    data, rdap_error = None, None
+    try:
+        data = await asyncio.wait_for(run_in_threadpool(rdap_lookup, domain), timeout=14)
+    except Exception as exc:  # network error, bad JSON, timeout: fall through to WHOIS
+        rdap_error = f"{type(exc).__name__}"
+    if data is None:
+        try:
+            data = await asyncio.wait_for(run_in_threadpool(whois43_lookup, domain), timeout=14)
+        except Exception as exc:
+            res["status"] = "error"
+            res["errors"].append(f"The registry couldn't be reached (RDAP: {rdap_error or 'not offered'}, WHOIS: {type(exc).__name__}). Try again later.")
+            return res
+    if data is None:
+        res["warnings"].append("This domain's registry offers no public RDAP or WHOIS service.")
+        res["status"] = "warn"
+        return res
+    if data.get("not_found"):
+        res.update(source=data.get("source"), server=data.get("server"), status="warn")
+        res["warnings"].append("The registry has no record for this domain. It may be unregistered, or a subdomain of a name we couldn't identify.")
+        return res
+
+    res.update(data, found=True)
+
+    # Expiry
+    if data.get("expires"):
+        days = int((datetime.fromisoformat(data["expires"]) - datetime.now(timezone.utc)).total_seconds() // 86400)
+        res["days_to_expiry"] = days
+        if days < 0:
+            res["errors"].append(f"The registration expired {-days} days ago. Renew it now, before the name is deleted and can be registered by someone else.")
+        elif days <= 30:
+            res["warnings"].append(f"The registration expires in {days} days. Check auto-renew and the payment method at the registrar.")
+    else:
+        res["notes"].append("The registry didn't publish an expiry date for this domain.")
+
+    # Status codes
+    readable, bad, transfer_locked = [], False, False
+    for raw in data.get("statuses", []):
+        key = _status_key(raw)
+        label, level = STATUS_MEANINGS.get(key, (raw, "ok"))
+        readable.append({"code": raw, "label": label, "level": level})
+        bad = bad or level == "bad"
+        transfer_locked = transfer_locked or key in ("clienttransferprohibited", "servertransferprohibited")
+    res["status_labels"] = readable
+    if bad:
+        res["errors"].append("The registry status shows a problem: " + ", ".join(r["label"] for r in readable if r["level"] == "bad") + ".")
+    if data.get("statuses") and not transfer_locked:
+        res["notes"].append("No transfer lock is set. Turning on the registrar lock helps protect the domain from being moved without permission.")
+
+    res["status"] = "fail" if res["errors"] else "warn" if res["warnings"] else "pass"
+    return res
+
+
+def nameserver_mismatch(registration: dict, dns_res: dict) -> str | None:
+    """Compare the nameservers the registry delegates to with the NS records the zone itself publishes."""
+    reg = {n.lower().rstrip(".") for n in registration.get("nameservers") or []}
+    live = {str(n).lower().rstrip(".") for n in ((dns_res.get("records") or {}).get("NS") or {}).get("records") or []}
+    if not reg or not live or reg == live:
+        return None
+    only_reg, only_live = sorted(reg - live), sorted(live - reg)
+    parts = []
+    if only_reg:
+        parts.append(f"the registry lists {', '.join(only_reg)} but the zone doesn't")
+    if only_live:
+        parts.append(f"the zone lists {', '.join(only_live)} but the registry doesn't")
+    return ("Nameservers don't match: " + "; ".join(parts) +
+            ". This usually means a DNS migration wasn't finished. Update the nameservers at the registrar or in the zone so both agree.")
 
 
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
@@ -1215,7 +1487,7 @@ async def analyze_tls(domain: str) -> dict:
 # 4. FASTAPI APP
 # =============================================================================
 app = FastAPI(
-    title="DigDNS API",
+    title="VdigDNS API",
     version="1.0.0",
     description="Open-source DNS, email-auth, SMTP and TLS diagnostics.",
     docs_url="/api/v1/docs" if ENABLE_DOCS else None,
@@ -1290,8 +1562,9 @@ async def analyze(response: Response,
     log.info("Analysing %s", clean)
 
     # All sections run concurrently; total time ≈ the slowest one.
-    dns_res, hosting_res, spf_res, dmarc_res, dkim_res, mail_res, tls_res, caa_res = await asyncio.gather(
+    dns_res, reg_res, hosting_res, spf_res, dmarc_res, dkim_res, mail_res, tls_res, caa_res = await asyncio.gather(
         _safe("DNS", lookup_dns_records(clean), 15),
+        _safe("Registration", analyze_registration(clean), 30),
         _safe("Hosting", analyze_hosting(clean), 15),
         _safe("SPF", analyze_spf(clean), 20),
         _safe("DMARC", analyze_dmarc(clean), 15),
@@ -1309,11 +1582,19 @@ async def analyze(response: Response,
         if tls_res.get("status") == "pass":
             tls_res["status"] = "warn"
 
+    # Registry nameservers vs. the zone's own NS records
+    ns_issue = nameserver_mismatch(reg_res, dns_res) if reg_res.get("found") else None
+    if ns_issue:
+        reg_res.setdefault("warnings", []).append(ns_issue)
+        if reg_res.get("status") == "pass":
+            reg_res["status"] = "warn"
+
     result = {
         "domain": clean,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "duration_ms": int((time.monotonic() - started) * 1000),
         "cached": False,
+        "registration": reg_res,
         "dns": dns_res,
         "hosting": hosting_res,
         "providers": detect_providers(clean, mail_res, spf_res),
@@ -1328,6 +1609,15 @@ async def analyze(response: Response,
     had_error = any(isinstance(v, dict) and v.get("status") == "error" for v in result.values())
     _set_cdn_cache(response, 30 if had_error else 300)
     return result
+
+
+@app.get("/api/v1/whois")
+async def whois(response: Response, domain: str = Query(..., min_length=1, max_length=300)) -> dict:
+    """Registration details only (RDAP, falling back to classic WHOIS)."""
+    clean = _clean_domain(domain)
+    res = await _safe("Registration", analyze_registration(clean), 30)
+    _set_cdn_cache(response, 30 if res.get("status") == "error" else 3600)  # registry data changes rarely
+    return {"domain": clean, **res}
 
 
 @app.get("/api/v1/dkim")
