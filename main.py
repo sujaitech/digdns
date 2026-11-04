@@ -1119,7 +1119,7 @@ STATUS_MEANINGS: dict[str, tuple[str, str]] = {
     "serverdeleteprohibited": ("Registry delete lock", "ok"),
     "clientupdateprohibited": ("Update locked", "ok"),
     "serverupdateprohibited": ("Registry update lock", "ok"),
-    "clientrenewprohibited": ("Renewal locked", "warn"),
+    "clientrenewprohibited": ("Renewal locked", "ok"),
     "active": ("Active", "ok"), "ok": ("Active", "ok"),
     "addperiod": ("Newly registered", "ok"), "autorenewperiod": ("Auto-renew grace period", "warn"),
     "renewperiod": ("Recently renewed", "ok"), "transferperiod": ("Recently transferred", "ok"),
