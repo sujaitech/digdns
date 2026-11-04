@@ -44,7 +44,6 @@ import socket
 import ssl
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -119,10 +118,6 @@ SMTP_HELO_NAME = os.getenv("SMTP_HELO_NAME") or socket.getfqdn()
 SMTP_MAIL_FROM = os.getenv("SMTP_MAIL_FROM") or f"postmaster@{SMTP_HELO_NAME}"
 
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "true").lower() == "true"
-
-# Google PageSpeed Insights API key (free). Without one, Google's shared anonymous
-# quota applies and speed tests often fail with "quota exceeded".
-PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "").strip()
 
 
 # =============================================================================
@@ -1514,97 +1509,6 @@ def cross_check_mail_security(sec: dict, mail: dict, dmarc: dict) -> None:
         sec["status"] = _status(sec["errors"], sec["warnings"])
 
 
-# ---- 3d-11. Page speed (Google PageSpeed Insights / Lighthouse) ------------------------------------
-PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-LAB_METRICS = (("largest-contentful-paint", "Largest Contentful Paint", "LCP"),
-               ("total-blocking-time", "Total Blocking Time", "TBT"),
-               ("cumulative-layout-shift", "Cumulative Layout Shift", "CLS"),
-               ("first-contentful-paint", "First Contentful Paint", "FCP"),
-               ("speed-index", "Speed Index", "SI"))
-FIELD_METRICS = (("LARGEST_CONTENTFUL_PAINT_MS", "Largest Contentful Paint", "LCP", "ms"),
-                 ("INTERACTION_TO_NEXT_PAINT", "Interaction to Next Paint", "INP", "ms"),
-                 ("CUMULATIVE_LAYOUT_SHIFT_SCORE", "Cumulative Layout Shift", "CLS", "cls"),
-                 ("FIRST_CONTENTFUL_PAINT_MS", "First Contentful Paint", "FCP", "ms"),
-                 ("EXPERIMENTAL_TIME_TO_FIRST_BYTE", "Time to First Byte", "TTFB", "ms"))
-
-
-def _plain(markdown: str) -> str:
-    """Lighthouse descriptions are Markdown with '[Learn more](...)' links: keep just the sentence."""
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", markdown or "")
-    return re.sub(r"\s*Learn (more|how).*$", "", text).strip()
-
-
-def run_pagespeed(url: str, strategy: str) -> dict:
-    """Blocking: ask Google to run Lighthouse on `url` and condense the (huge) result."""
-    params = {"url": url, "strategy": strategy, "category": "performance", "locale": "en"}
-    if PAGESPEED_API_KEY:
-        params["key"] = PAGESPEED_API_KEY
-    req = urllib.request.Request(f"{PSI_ENDPOINT}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=55) as resp:
-        data = json.loads(resp.read().decode("utf-8", errors="replace"))
-
-    lh = data.get("lighthouseResult") or {}
-    audits = lh.get("audits") or {}
-    perf = ((lh.get("categories") or {}).get("performance") or {}).get("score")
-
-    lab = []
-    for key, name, short in LAB_METRICS:
-        a = audits.get(key) or {}
-        lab.append({"id": short, "name": name, "value": a.get("numericValue"), "display": a.get("displayValue"), "score": a.get("score")})
-
-    exp = data.get("loadingExperience") or {}
-    field = []
-    for key, name, short, unit in FIELD_METRICS:
-        m = (exp.get("metrics") or {}).get(key)
-        if m:
-            p75 = m.get("percentile")
-            if unit == "cls" and p75 is not None:
-                p75 = p75 / 100  # the API reports CLS × 100
-            field.append({"id": short, "name": name, "p75": p75, "unit": unit, "category": m.get("category")})
-
-    opportunities = []
-    for a in audits.values():
-        details = a.get("details") or {}
-        savings = details.get("overallSavingsMs") or (a.get("metricSavings") or {}).get("LCP") or 0
-        if a.get("score") is not None and a["score"] < 0.9 and savings >= 100:
-            opportunities.append({"title": a.get("title"), "display": a.get("displayValue"),
-                                  "savings_ms": int(savings), "description": _plain(a.get("description", ""))})
-    opportunities.sort(key=lambda o: o["savings_ms"], reverse=True)
-
-    def num(key: str) -> float | None:
-        return (audits.get(key) or {}).get("numericValue")
-
-    requests_count = len(((audits.get("network-requests") or {}).get("details") or {}).get("items") or []) or None
-    screenshot = ((audits.get("final-screenshot") or {}).get("details") or {}).get("data")
-    return {
-        "url": url, "strategy": strategy,
-        "final_url": lh.get("finalDisplayedUrl") or lh.get("finalUrl") or url,
-        "score": round(perf * 100) if isinstance(perf, (int, float)) else None,
-        "lab": lab, "field": field,
-        "field_scope": "origin" if exp.get("origin_fallback") else "page",
-        "field_overall": exp.get("overall_category"),
-        "opportunities": opportunities[:6],
-        "diagnostics": {"server_response_ms": num("server-response-time"), "total_bytes": num("total-byte-weight"),
-                        "requests": requests_count, "dom_size": num("dom-size")},
-        "screenshot": screenshot if isinstance(screenshot, str) and screenshot.startswith("data:image/") else None,
-        "lighthouse_version": lh.get("lighthouseVersion"), "fetched_at": lh.get("fetchTime"),
-        "runtime_error": (lh.get("runtimeError") or {}).get("message"),
-    }
-
-
-def normalize_page_url(raw: str) -> str:
-    """Accept 'example.com', 'https://example.com/page' etc.; return a clean https/http URL or raise ValueError."""
-    raw = raw.strip()
-    if not re.match(r"^[a-z][a-z0-9+.-]*://", raw, re.I):
-        raw = "https://" + raw
-    parts = urllib.parse.urlsplit(raw)
-    if parts.scheme.lower() not in ("http", "https"):
-        raise ValueError("Only http:// and https:// pages can be tested.")
-    host = normalize_domain(parts.hostname or "")
-    port = f":{parts.port}" if parts.port else ""
-    return urllib.parse.urlunsplit((parts.scheme.lower(), host + port, parts.path or "/", parts.query, ""))
-
-
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
 def _decode(msg: Any) -> str:
     return msg.decode("utf-8", errors="replace") if isinstance(msg, bytes) else str(msg)
@@ -2039,37 +1943,6 @@ async def propagation(response: Response,
         raise HTTPException(status_code=504, detail="The resolvers took too long to answer. Try again.") from exc
     _set_cdn_cache(response, 30)  # short: people re-run this while waiting for a change to spread
     return res
-
-
-@app.get("/api/v1/speed")
-async def speed(response: Response,
-                url: str = Query(..., min_length=3, max_length=2000),
-                strategy: str = Query("mobile", pattern="^(mobile|desktop)$")) -> dict:
-    """Run Google PageSpeed Insights (Lighthouse) for one page. Takes 15-45 seconds."""
-    try:
-        page = normalize_page_url(url)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        result = await asyncio.wait_for(run_in_threadpool(run_pagespeed, page, strategy), timeout=57)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="The speed test took longer than a minute. Slow pages sometimes do; try again.") from exc
-    except urllib.error.HTTPError as exc:
-        try:
-            message = json.loads(exc.read().decode("utf-8", errors="replace")).get("error", {}).get("message", "")
-        except Exception:
-            message = ""
-        if exc.code == 429:
-            detail = "Google's speed-test quota is used up for now. Try again later" + ("" if PAGESPEED_API_KEY else ", or add a PageSpeed API key") + "."
-        elif "FAILED_DOCUMENT_REQUEST" in message or "ERRORED_DOCUMENT_REQUEST" in message:
-            detail = "Google couldn't load that page. Check the address and that the site is up."
-        else:
-            detail = f"The speed test failed: {message or f'HTTP {exc.code}'}"
-        raise HTTPException(status_code=502, detail=detail) from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise HTTPException(status_code=502, detail="Couldn't reach Google's speed-test service. Try again shortly.") from exc
-    _set_cdn_cache(response, 3600)  # an hour: the same page tested twice in a row gives the cached result
-    return result
 
 
 @app.get("/api/v1/whois")

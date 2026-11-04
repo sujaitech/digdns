@@ -13,9 +13,8 @@ VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one r
 - **MTA-STS, TLS-RPT and BIMI:** records parsed, the MTA-STS policy fetched and checked against the MX hosts, and BIMI checked against the DMARC policy.
 - **SSL:** issuer, expiry, covered names, and the CAA records that say which authorities may issue.
 
-Plus four tools:
+Plus three tools:
 
-- **Page speed:** Google Lighthouse via PageSpeed Insights. Score, Core Web Vitals, real-visitor data and the top fixes.
 - **Propagation:** compares 8 public resolvers with the authoritative nameserver.
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
@@ -35,7 +34,6 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
                                        ├─► Team Cymru               who owns an IP
                                        ├─► RDAP / WHOIS registries  domain registration
                                        ├─► nameservers + 8 resolvers health and propagation
-                                       ├─► Google PageSpeed API     page speed (Lighthouse)
                                        └─► the checked site :443    SSL certificate, MTA-STS policy
 ```
 
@@ -67,7 +65,6 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 |---|---|
 | `/api/v1/analyze?domain=example.com` | The full report |
 | `/api/v1/whois?domain=example.com` | Registration only (RDAP, falling back to WHOIS) |
-| `/api/v1/speed?url=https://example.com&strategy=mobile` | PageSpeed / Lighthouse test (15–45 s; `strategy` is `mobile` or `desktop`) |
 | `/api/v1/propagation?domain=www.example.com&type=A` | Compare 8 public resolvers and the authoritative nameserver |
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
@@ -104,7 +101,6 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 | `DNS_NAMESERVERS` | `1.1.1.1,8.8.8.8` | Resolvers used for every lookup |
 | `DNS_TIMEOUT` / `DNS_LIFETIME` | `3` / `6` | Seconds per server and per query |
 | `TLS_TIMEOUT` | `8` | Seconds for the certificate check |
-| `PAGESPEED_API_KEY` | *(empty)* | Google PageSpeed Insights API key. Without it, speed tests share Google's small anonymous quota and often fail. |
 | `ENABLE_DOCS` | `true` | Serve `/api/v1/docs` |
 | `ENABLE_SMTP` | `false` | SMTP handshake (needs outbound port 25, which Vercel blocks) |
 
@@ -123,4 +119,3 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 - **DKIM under a custom selector** can only be found with the selector check, by reading `s=` from a sent email's `DKIM-Signature` header.
 - **Hosting detection** names the network or CDN. Behind Cloudflare and similar CDNs, the real origin server can't be seen from DNS.
 - **Propagation and nameserver checks run from Vercel's region.** Anycast resolvers answer from their nearest site, so this isn't a worldwide view. Nameservers are checked over IPv4 only.
-- **Speed tests use Google's quota.** Results are cached for an hour per page and device.
