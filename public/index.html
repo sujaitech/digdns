@@ -73,7 +73,6 @@
         <!-- Tabs: the tools -->
         <nav aria-label="Tools" class="flex flex-wrap gap-x-5 gap-y-2 text-[15px]">
           <a href="#" data-nav="report" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
-          <a href="#speed" data-nav="speed" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Page speed</a>
           <a href="#propagation" data-nav="prop" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
           <a href="#spf-builder" data-nav="spf" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
@@ -105,22 +104,6 @@
           <span class="mx-1 text-white/30" aria-hidden="true">|</span>
           <button type="button" id="sample-btn" class="text-white underline underline-offset-4 hover:text-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">See a sample report</button>
         </div>
-      </div>
-
-      <!-- Header block: page speed -->
-      <div id="head-speed" hidden>
-        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Test a page’s loading speed</h1>
-        <p class="mt-3 max-w-2xl text-white/80">Google Lighthouse loads the page on a simulated phone or desktop and measures it, the same engine behind PageSpeed Insights and GTmetrix. A test takes 20 to 40 seconds.</p>
-        <form id="speed-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
-          <label for="speed-url" class="sr-only">Page address</label>
-          <input id="speed-url" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="https://example.com" required maxlength="2000"
-                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
-          <fieldset class="flex rounded-lg bg-white/10 p-1" aria-label="Device">
-            <label class="cursor-pointer"><input type="radio" name="speed-strategy" value="mobile" checked class="peer sr-only" /><span class="block rounded-md px-4 py-2.5 text-sm font-semibold text-white/70 peer-checked:bg-white peer-checked:text-navy peer-focus-visible:ring-2 peer-focus-visible:ring-sky">Mobile</span></label>
-            <label class="cursor-pointer"><input type="radio" name="speed-strategy" value="desktop" class="peer sr-only" /><span class="block rounded-md px-4 py-2.5 text-sm font-semibold text-white/70 peer-checked:bg-white peer-checked:text-navy peer-focus-visible:ring-2 peer-focus-visible:ring-sky">Desktop</span></label>
-          </fieldset>
-          <button id="speed-btn" type="submit" class="rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">Run speed test</button>
-        </form>
       </div>
 
       <!-- Header block: propagation -->
@@ -173,22 +156,6 @@
       </div>
       <div id="hero" class="p-6 sm:p-10"></div>
       <div id="sections"></div>
-    </article>
-  </main>
-
-  <!-- ================= VIEW: PAGE SPEED ================= -->
-  <main id="view-speed" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <div id="speed-error" role="alert" class="mb-4 hidden rounded-xl border border-fail/30 bg-white p-5 text-fail shadow-sm"></div>
-    <article id="speed-sheet" class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
-      <div class="p-6 sm:p-10">
-        <h2 class="semi-wide text-xl font-bold text-navy">What you’ll get</h2>
-        <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
-          <p><strong class="text-navy">Performance score.</strong> Lighthouse’s 0 to 100 grade for the page on a simulated device.</p>
-          <p><strong class="text-navy">Core Web Vitals.</strong> How fast the main content appears, how much the layout jumps, and how long the page stays frozen.</p>
-          <p><strong class="text-navy">Real visitors.</strong> Field data from Chrome users over the last 28 days, when the site has enough traffic.</p>
-          <p><strong class="text-navy">What to fix first.</strong> The changes with the biggest estimated time savings.</p>
-        </div>
-      </div>
     </article>
   </main>
 
@@ -644,7 +611,6 @@ function renderHero(data, { pending = false } = {}) {
   requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
   if (!pending) {
     add(hero, add(el("div", "mt-7 flex flex-wrap items-center gap-x-4 gap-y-3"),
-      actionButton("Test page speed", () => openSpeed(data.domain)),
       actionButton("Check propagation", () => openPropagation(data.domain)),
       el("p", "text-xs text-ink/50", relativeChecked(data))));
   }
@@ -985,142 +951,6 @@ function renderMailSecurity(m) {
 }
 
 /* =====================================================================
-   PAGE SPEED
-   ===================================================================== */
-const scoreStatus = (s) => (s == null ? "info" : s >= 0.9 ? "pass" : s >= 0.5 ? "warn" : "fail");
-const FIELD_CATEGORY = { FAST: ["pass", "Good"], AVERAGE: ["warn", "Needs improvement"], SLOW: ["fail", "Poor"] };
-const COLOR_HEX = { pass: "#13795B", warn: "#A85A06", fail: "#C0261B", info: "#1679A8" };
-
-/** The score ring: the one large graphic on the speed page. */
-function scoreRing(score) {
-  const status = score == null ? "info" : scoreStatus(score / 100);
-  const r = 52, c = 2 * Math.PI * r, frac = score == null ? 0 : score / 100;
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 128 128");
-  svg.setAttribute("class", "h-36 w-36 shrink-0");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", score == null ? "No performance score" : `Performance score ${score} out of 100`);
-  const track = document.createElementNS(ns, "circle");
-  Object.entries({ cx: 64, cy: 64, r, fill: "none", stroke: "#EEF1F7", "stroke-width": 10 }).forEach(([k, v]) => track.setAttribute(k, v));
-  const arc = document.createElementNS(ns, "circle");
-  Object.entries({ cx: 64, cy: 64, r, fill: "none", stroke: COLOR_HEX[status], "stroke-width": 10, "stroke-linecap": "round",
-    "stroke-dasharray": `${c * frac} ${c}`, transform: "rotate(-90 64 64)" }).forEach(([k, v]) => arc.setAttribute(k, v));
-  const text = document.createElementNS(ns, "text");
-  Object.entries({ x: 64, y: 64, "text-anchor": "middle", "dominant-baseline": "central", fill: COLOR_HEX[status],
-    "font-size": 38, "font-weight": 800, "font-family": "Archivo, sans-serif" }).forEach(([k, v]) => text.setAttribute(k, v));
-  text.textContent = score == null ? "—" : String(score);
-  svg.append(track, arc, text);
-  return svg;
-}
-
-function fmtField(f) {
-  if (f.p75 == null) return "—";
-  if (f.unit === "cls") return f.p75.toFixed(2);
-  return f.p75 >= 1000 ? `${(f.p75 / 1000).toFixed(1)} s` : `${f.p75} ms`;
-}
-
-function renderSpeed(r) {
-  const sheet = $("speed-sheet");
-  sheet.replaceChildren();
-  const top = el("div", "flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-10");
-  add(top, scoreRing(r.score), add(el("div", "min-w-0"),
-    el("p", "text-sm text-ink/60", `${r.strategy === "desktop" ? "Desktop" : "Mobile"} performance${r.sample ? ", sample data" : ""}`),
-    el("h2", "display mt-1 break-anywhere text-2xl font-extrabold leading-tight text-navy sm:text-3xl", r.final_url),
-    el("p", "mt-2 text-[15px] text-ink/75", r.score == null ? "Lighthouse couldn’t score this page."
-      : r.score >= 90 ? "Fast. This page loads well on the tested device."
-      : r.score >= 50 ? "Room to improve. Start with the fixes below."
-      : "Slow. Visitors on this device wait noticeably; the fixes below matter."),
-    r.runtime_error ? el("p", "mt-2 text-[14px] text-fail", r.runtime_error) : null));
-  add(sheet, top);
-
-  // Lab metrics
-  const lab = el("div", "grid grid-cols-2 gap-x-6 gap-y-5 border-t border-rule p-6 sm:grid-cols-5 sm:p-8");
-  (r.lab || []).forEach((m) => add(lab, add(el("div", "min-w-0"),
-    el("div", `tabular text-2xl font-bold ${st(scoreStatus(m.score)).text}`, m.display || "—"),
-    el("div", "mt-1 text-[13px] font-semibold text-navy", m.name),
-    el("div", "text-[12px] text-ink/60", `${m.id}, simulated test`))));
-  add(sheet, lab);
-
-  // Field data + fixes side by side
-  const lower = el("div", "grid border-t border-rule lg:grid-cols-2 lg:divide-x lg:divide-rule max-lg:[&>*+*]:border-t max-lg:[&>*+*]:border-rule");
-  const field = el("section", "min-w-0 space-y-4 p-6 sm:p-8");
-  add(field, el("h3", "semi-wide text-lg font-bold text-navy", "Real visitors"),
-    el("p", "-mt-3 text-[14px] text-ink/70", r.field?.length
-      ? `Chrome users over the last 28 days, ${r.field_scope === "origin" ? "across the whole site (this page alone has too little traffic)" : "on this page"}. Values are the 75th percentile.`
-      : "The Chrome UX Report doesn’t have enough traffic data for this site yet. Popular sites usually do."));
-  (r.field || []).forEach((f) => {
-    const [status, word] = FIELD_CATEGORY[f.category] || ["info", f.category || "Unknown"];
-    add(field, row(`${f.name} (${f.id})`, add(el("div", "flex flex-wrap items-center gap-x-3"),
-      el("span", "tabular font-mono text-[13px]", fmtField(f)),
-      el("span", `rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(status).pill}`, word))));
-  });
-  const fixes = el("section", "min-w-0 space-y-4 p-6 sm:p-8");
-  add(fixes, el("h3", "semi-wide text-lg font-bold text-navy", "What to fix first"));
-  if (!r.opportunities?.length) add(fixes, el("p", "text-[14px] text-ink/70", "No fix would save more than a tenth of a second. Nice."));
-  const list = el("ol", "space-y-3");
-  (r.opportunities || []).forEach((o) => add(list, add(el("li", "rounded-lg bg-canvas px-4 py-3"),
-    add(el("div", "flex flex-wrap items-baseline justify-between gap-x-3"),
-        el("span", "font-semibold text-navy", o.title),
-        el("span", "tabular text-[13px] font-semibold text-warn", `saves about ${(o.savings_ms / 1000).toFixed(1)} s`)),
-    o.description ? el("p", "mt-1 text-[13px] leading-snug text-ink/70", o.description) : null)));
-  add(fixes, list);
-  add(sheet, add(lower, field, fixes));
-
-  // Diagnostics + screenshot
-  const d = r.diagnostics || {};
-  const bottom = el("div", "grid gap-8 border-t border-rule p-6 sm:p-8 lg:grid-cols-[1fr_auto]");
-  const diag = add(el("div", "min-w-0"),
-    el("h3", "semi-wide mb-2 text-lg font-bold text-navy", "Page details"),
-    row("Server response", d.server_response_ms != null ? `${Math.round(d.server_response_ms)} ms` : "—"),
-    row("Page weight", d.total_bytes != null ? `${(d.total_bytes / 1048576).toFixed(2)} MB` : "—"),
-    row("Requests", d.requests ?? "—"),
-    row("Page elements (DOM)", d.dom_size != null ? Math.round(d.dom_size) : "—"),
-    row("Tested with", `Lighthouse ${r.lighthouse_version || ""}${r.fetched_at ? `, ${new Date(r.fetched_at).toUTCString()}` : ""}`));
-  add(bottom, diag);
-  if (r.screenshot) {
-    const img = el("img", "max-h-80 w-auto max-w-full rounded-lg border border-rule");
-    img.src = r.screenshot; img.alt = "How the page looked when the test finished";
-    add(bottom, add(el("figure", "min-w-0"), img, el("figcaption", "mt-2 text-[12px] text-ink/60", "At the end of the test")));
-  }
-  add(sheet, bottom);
-}
-
-let speedTimer = null;
-async function runSpeed(raw) {
-  const url = raw.trim();
-  if (!url) return;
-  const strategy = document.querySelector('input[name="speed-strategy"]:checked').value;
-  $("speed-error").classList.add("hidden");
-  $("speed-btn").disabled = true;
-  $("speed-btn").textContent = "Testing…";
-  const sheet = $("speed-sheet");
-  const started = Date.now();
-  const status = el("p", "mt-2 text-[15px] text-ink/70", "");
-  sheet.replaceChildren(add(el("div", "flex items-center gap-6 p-6 sm:p-10"),
-    add(el("div", "h-36 w-36 shrink-0 animate-pulse rounded-full border-[10px] border-canvas")),
-    add(el("div"), el("h2", "semi-wide text-xl font-bold text-navy", `Testing on a simulated ${strategy === "desktop" ? "desktop" : "phone"}…`), status)));
-  const tick = () => { status.textContent = `Google is loading and measuring the page. ${Math.round((Date.now() - started) / 1000)} s so far; most tests finish within 40 s.`; };
-  tick(); clearInterval(speedTimer); speedTimer = setInterval(tick, 1000);
-  try {
-    const res = await fetch(`${API_BASE}/api/v1/speed?url=${encodeURIComponent(url)}&strategy=${strategy}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The speed test failed (HTTP ${res.status}).`);
-    renderSpeed(data);
-  } catch (err) {
-    sheet.replaceChildren(el("p", "p-6 text-ink/60 sm:p-10", "Enter a page address above to run a test."));
-    const box = $("speed-error");
-    box.textContent = err.name === "TimeoutError" ? "The test took longer than a minute and was stopped. Try again." :
-      err instanceof TypeError ? "Couldn't reach the VdigDNS service. Check your connection and try again." : err.message;
-    box.classList.remove("hidden");
-  } finally {
-    clearInterval(speedTimer);
-    $("speed-btn").disabled = false;
-    $("speed-btn").textContent = "Run speed test";
-  }
-}
-
-/* =====================================================================
    PROPAGATION
    ===================================================================== */
 function renderPropagation(p) {
@@ -1396,9 +1226,9 @@ function loadDmarc(domain, record) {
 /* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", speed: "#speed", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder" };
+const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder" };
 function showView(name) {
-  ["report", "speed", "prop", "spf", "dmarc"].forEach((v) => {
+  ["report", "prop", "spf", "dmarc"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -1422,11 +1252,6 @@ document.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click
   window.scrollTo(0, 0);
 }));
 
-function openSpeed(domain) {
-  $("speed-url").value = `https://${domain}`;
-  history.pushState(null, "", VIEWS.speed); showView("speed"); window.scrollTo(0, 0);
-  $("speed-url").focus();
-}
 function openPropagation(domain) {
   history.pushState(null, "", VIEWS.prop); showView("prop"); window.scrollTo(0, 0);
   runPropagation(domain, "A");
@@ -1507,29 +1332,7 @@ const SAMPLE = {
     caa: { found: true, found_at: "northwind.example", issuers: ["letsencrypt.org"], wildcard_issuers: [], iodef: ["mailto:security@northwind.example"] } },
 };
 
-// Samples for the speed and propagation tabs (shown only in the design preview)
-const SAMPLE_SPEED = {
-  sample: true, strategy: "mobile", final_url: "https://northwind.example/", score: 73,
-  lab: [
-    { id: "LCP", name: "Largest Contentful Paint", display: "3.1 s", score: 0.6 },
-    { id: "TBT", name: "Total Blocking Time", display: "350 ms", score: 0.7 },
-    { id: "CLS", name: "Cumulative Layout Shift", display: "0.02", score: 1 },
-    { id: "FCP", name: "First Contentful Paint", display: "1.5 s", score: 0.9 },
-    { id: "SI", name: "Speed Index", display: "2.8 s", score: 0.8 },
-  ],
-  field_scope: "origin",
-  field: [
-    { id: "LCP", name: "Largest Contentful Paint", p75: 2600, unit: "ms", category: "AVERAGE" },
-    { id: "INP", name: "Interaction to Next Paint", p75: 180, unit: "ms", category: "FAST" },
-    { id: "CLS", name: "Cumulative Layout Shift", p75: 0.05, unit: "cls", category: "FAST" },
-  ],
-  opportunities: [
-    { title: "Eliminate render-blocking resources", savings_ms: 900, description: "Stylesheets and scripts are delaying the first paint. Inline critical CSS and defer the rest." },
-    { title: "Serve images in next-gen formats", savings_ms: 450, description: "WebP and AVIF images are much smaller than PNG or JPEG at the same quality." },
-  ],
-  diagnostics: { server_response_ms: 420, total_bytes: 1843200, requests: 57, dom_size: 812 },
-  lighthouse_version: "12.3.0", fetched_at: "2026-11-04T06:00:00Z", screenshot: null,
-};
+// Sample for the propagation tab (shown only in the design preview)
 const SAMPLE_PROP = {
   domain: "www.northwind.example", type: "A", status: "warn",
   summary: "1 of 8 resolvers show a different answer. They're still serving a cached older record; this clears as their copies expire (see TTL).",
@@ -1600,7 +1403,6 @@ function run(domain) {
    Wire everything up
    ===================================================================== */
 buildProviderChoices();
-$("speed-form").addEventListener("submit", (e) => { e.preventDefault(); runSpeed($("speed-url").value); });
 $("prop-form").addEventListener("submit", (e) => { e.preventDefault(); runPropagation($("prop-domain").value, $("prop-type").value); });
 $("spf-form").addEventListener("input", updateSpf);
 $("spf-form").addEventListener("submit", (e) => e.preventDefault());
@@ -1626,8 +1428,8 @@ showView(viewFromHash());
 const params = new URLSearchParams(location.search);
 if (params.get("domain")) { $("domain-input").value = params.get("domain"); if (viewFromHash() === "report") analyze(params.get("domain")); }
 else if (params.has("sample") || window.DIGDNS_SAMPLE) renderReport(SAMPLE);
-// The design preview also fills the speed and propagation tabs with sample results.
-if (window.DIGDNS_SAMPLE) { renderSpeed(SAMPLE_SPEED); renderPropagation(SAMPLE_PROP); }
+// The design preview also fills the propagation tab with a sample result.
+if (window.DIGDNS_SAMPLE) renderPropagation(SAMPLE_PROP);
 </script>
 </body>
 </html>
