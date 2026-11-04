@@ -32,10 +32,12 @@ Design rules worth learning from:
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import logging
 import os
 import re
+import secrets
 import smtplib
 import socket
 import ssl
@@ -49,8 +51,10 @@ import dns.name
 import dns.resolver
 import dns.reversename
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtensionOID, NameOID
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
@@ -233,7 +237,7 @@ def _status(errors: list, warnings: list) -> str:
 # =============================================================================
 
 # ---- 3a. Plain DNS record lookup ---------------------------------------------------
-RECORD_TYPES = ("A", "AAAA", "MX", "TXT", "CNAME", "NS", "SOA")
+RECORD_TYPES = ("A", "AAAA", "MX", "TXT", "CNAME", "NS", "SOA", "CAA")
 
 # SRV records never live at the bare domain; they live at _service._proto.domain.
 # So "look up SRV for example.com" really means "check the common service names".
@@ -262,7 +266,16 @@ def _format_rdata(rtype: str, r: Any) -> Any:
     if rtype == "SRV":
         return {"priority": r.priority, "weight": r.weight, "port": r.port,
                 "target": r.target.to_text(omit_final_dot=True)}
+    if rtype == "CAA":
+        return _caa_tuple(r)
     return r.to_text()  # A / AAAA
+
+
+def _caa_tuple(r: Any) -> dict:
+    """CAA rdata -> {"flags": 0, "tag": "issue", "value": "letsencrypt.org"}."""
+    tag = r.tag.decode("ascii", errors="replace") if isinstance(r.tag, bytes) else str(r.tag)
+    value = r.value.decode("utf-8", errors="replace") if isinstance(r.value, bytes) else str(r.value)
+    return {"flags": int(r.flags), "tag": tag.lower(), "value": value}
 
 
 async def _lookup_type(name: str, rtype: str) -> dict:
@@ -416,8 +429,17 @@ async def analyze_spf(domain: str) -> dict:
     if len(records) > 1:
         res["errors"].append(f"{len(records)} SPF records found. RFC 7208 requires exactly one — receivers return PermError.")
 
+    await _assess_spf(domain, records[0], res)
+    return res
+
+
+async def _assess_spf(domain: str, record: str, res: dict) -> None:
+    """
+    Walk one SPF record and fill in res: lookup count, includes, errors, warnings, status.
+    Shared by the domain report and the SPF builder, so both always agree.
+    """
     state = {"lookups": 0, "void": 0}
-    all_q = await _walk_spf(domain, records[0], state, res, depth=0, path=(domain,))
+    all_q = await _walk_spf(domain, record, state, res, depth=0, path=(domain,))
     res["lookup_count"], res["void_lookups"], res["all_qualifier"] = state["lookups"], state["void"], all_q
 
     if state["lookups"] > SPF_LOOKUP_LIMIT:
@@ -437,8 +459,12 @@ async def analyze_spf(domain: str) -> dict:
     elif all_q is None:
         res["warnings"].append("No 'all' mechanism — unlisted senders get a neutral result. End the record with '~all' or '-all'.")
 
+    if len(record) > 255:
+        res["notes"] = res.get("notes", []) + [
+            f"The record is {len(record)} characters. DNS stores TXT text in 255-character pieces; "
+            "most DNS panels split it for you, but some need it entered as several quoted strings."]
+
     res["status"] = _status(res["errors"], res["warnings"])
-    return res
 
 
 # ---- 3c. DMARC analysis ---------------------------------------------------------------------
@@ -672,6 +698,233 @@ async def analyze_hosting(domain: str) -> dict:
     if len(providers) > 1:
         res["notes"].append("This domain's addresses belong to more than one network (multi-provider or load-balanced).")
     return res
+
+
+# ---- 3d-3. DKIM ------------------------------------------------------------------------------------
+# DKIM keys live at <selector>._domainkey.<domain>. The selector is chosen by the
+# mail provider and isn't published anywhere, so we try the common ones. A key
+# under a custom selector can only be found by reading a sent email's headers
+# (DKIM-Signature: ... s=<selector>), which is why there's also a single-selector check.
+DKIM_SELECTORS = (
+    "google",                                   # Google Workspace
+    "selector1", "selector2",                   # Microsoft 365
+    "default", "dkim", "mail", "smtp", "email", # cPanel, Plesk and generic setups
+    "k1", "k2", "k3",                           # Mailchimp / Mandrill
+    "mandrill", "mte1", "mxvault",
+    "s1", "s2",                                 # SendGrid
+    "zmail", "zoho",                            # Zoho
+    "protonmail", "protonmail2", "protonmail3", # Proton
+    "fm1", "fm2", "fm3",                        # Fastmail
+    "sig1",                                     # iCloud
+    "pm",                                       # Postmark
+    "mailjet", "resend", "cm", "everlytickey1",
+)
+_SELECTOR_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_.-]{0,62})$", re.I)
+
+
+def _parse_tag_list(record: str) -> dict[str, str]:
+    """'v=DKIM1; k=rsa; p=MIIB...' -> {'v': 'DKIM1', 'k': 'rsa', 'p': 'MIIB...'}"""
+    tags: dict[str, str] = {}
+    for part in record.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            tags[key.strip().lower()] = value.strip()
+    return tags
+
+
+def _dkim_key_info(tags: dict[str, str]) -> dict:
+    """Work out key type and strength from the p= (public key) tag."""
+    key_type = tags.get("k", "rsa").lower() or "rsa"
+    p = re.sub(r"\s+", "", tags.get("p", ""))
+    if not p:
+        return {"key_type": key_type, "bits": None, "revoked": True}
+    if key_type == "ed25519":
+        return {"key_type": "ed25519", "bits": 256, "revoked": False}
+    try:
+        raw = base64.b64decode(p + "=" * (-len(p) % 4))
+        key = serialization.load_der_public_key(raw)  # DER public key (SubjectPublicKeyInfo)
+        bits = getattr(key, "key_size", None)
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        bits = None  # malformed or unusual key encoding — reported as "couldn't be read"
+    return {"key_type": key_type, "bits": bits, "revoked": False}
+
+
+async def check_dkim_selector(domain: str, selector: str) -> dict | None:
+    """Look up one selector. Returns None when no DKIM key is published there."""
+    name = f"{selector}._domainkey.{domain}"
+    records = [t for t in await get_txt(name) if "p=" in t.replace(" ", "")]
+    if not records:
+        return None
+    info = _dkim_key_info(_parse_tag_list(records[0]))
+    if info["revoked"]:
+        status, note = "info", "Key is revoked (empty p= tag), so it can't sign mail."
+    elif info["key_type"] == "ed25519":
+        status, note = "pass", "Ed25519 key."
+    elif info["bits"] is None:
+        status, note = "warn", "The key couldn't be read — check for a typo in the p= value."
+    elif info["bits"] < 1024:
+        status, note = "fail", f"{info['bits']}-bit RSA key is too weak; many receivers ignore it. Use 2048-bit."
+    elif info["bits"] < 2048:
+        status, note = "warn", f"{info['bits']}-bit RSA key works, but 2048-bit is the current recommendation."
+    else:
+        status, note = "pass", f"{info['bits']}-bit RSA key."
+    return {"selector": selector, "name": name, "record": records[0], **info, "status": status, "note": note}
+
+
+async def analyze_dkim(domain: str) -> dict:
+    res: dict[str, Any] = {"status": "warn", "selectors": [], "checked": len(DKIM_SELECTORS),
+                           "wildcard": False, "errors": [], "warnings": [], "notes": []}
+
+    async def safe_check(sel: str) -> dict | None:
+        try:
+            return await check_dkim_selector(domain, sel)
+        except DNSLookupError:
+            return None
+
+    # A random selector should never exist. If it does, the domain answers every
+    # name (wildcard TXT) and the selector scan below would be meaningless.
+    probe_sel = "digdns-probe-" + secrets.token_hex(4)
+    probe, *found = await asyncio.gather(safe_check(probe_sel), *(safe_check(s) for s in DKIM_SELECTORS))
+    if probe:
+        res["wildcard"] = True
+        res["warnings"].append("This domain answers every _domainkey name (wildcard record), so common-selector "
+                               "scanning can't tell real keys apart. Check your real selector below.")
+        return res
+
+    res["selectors"] = [f for f in found if f]
+    if not res["selectors"]:
+        res["warnings"].append(f"No DKIM key found at {len(DKIM_SELECTORS)} common selectors. DKIM may still be set up under "
+                               "a custom selector: find s= in the DKIM-Signature header of a sent email and check it below.")
+        return res
+
+    statuses = [s["status"] for s in res["selectors"] if s["status"] != "info"]
+    if any(s == "fail" for s in statuses):
+        res["status"] = "fail"
+    elif any(s == "warn" for s in statuses) or not statuses:
+        res["status"] = "warn"
+    else:
+        res["status"] = "pass"
+    return res
+
+
+# ---- 3d-4. CAA (which certificate authorities may issue SSL) ------------------------------------------
+# CAA domain -> words that appear in that CA's certificate issuer name.
+CAA_ISSUER_NAMES: dict[str, tuple[str, ...]] = {
+    "letsencrypt.org": ("let's encrypt",),
+    "pki.goog": ("google trust services",),
+    "digicert.com": ("digicert",), "symantec.com": ("digicert", "symantec"),
+    "sectigo.com": ("sectigo", "zerossl", "comodo"), "comodoca.com": ("sectigo", "comodo"),
+    "amazon.com": ("amazon",), "amazontrust.com": ("amazon",), "amazonaws.com": ("amazon",),
+    "globalsign.com": ("globalsign",),
+    "godaddy.com": ("godaddy", "starfield"), "starfieldtech.com": ("starfield",),
+    "ssl.com": ("ssl.com", "ssl corporation"),
+    "entrust.net": ("entrust",), "buypass.com": ("buypass",),
+    "microsoft.com": ("microsoft",), "certum.pl": ("certum", "asseco"),
+}
+
+
+async def analyze_caa(domain: str) -> dict:
+    """
+    RFC 8659: if the name has no CAA record, the parent's applies, and so on
+    up the tree. We climb until we find one (stopping before the TLD).
+    """
+    res: dict[str, Any] = {"found": False, "found_at": None, "records": [], "issuers": [],
+                           "wildcard_issuers": [], "iodef": [], "error": None}
+    labels = domain.split(".")
+    try:
+        for i in range(len(labels) - 1):
+            name = ".".join(labels[i:])
+            recs = await resolve(name, "CAA")
+            if recs:
+                res["found"], res["found_at"] = True, name
+                res["records"] = [_caa_tuple(r) for r in recs]
+                break
+    except DNSLookupError as exc:
+        res["error"] = str(exc)
+        return res
+
+    for rec in res["records"]:
+        ca = rec["value"].split(";")[0].strip().lower()   # "letsencrypt.org; validationmethods=..." -> CA domain
+        if rec["tag"] == "issue":
+            res["issuers"].append(ca or "(none)")          # an empty issue value means "no CA at all"
+        elif rec["tag"] == "issuewild":
+            res["wildcard_issuers"].append(ca or "(none)")
+        elif rec["tag"] == "iodef":
+            res["iodef"].append(rec["value"])
+    return res
+
+
+def caa_vs_certificate(caa: dict, tls: dict) -> str | None:
+    """Warn when the CA that issued today's certificate isn't allowed to issue the next one."""
+    if not caa.get("found") or not caa.get("issuers") or not tls.get("issuer"):
+        return None
+    issuer_text = f"{tls.get('issuer_org') or ''} {tls.get('issuer') or ''}".lower()
+    current_ca = next((ca for ca, words in CAA_ISSUER_NAMES.items() if any(w in issuer_text for w in words)), None)
+    if not current_ca:
+        return None  # issuer we don't recognise: stay quiet rather than guess
+    allowed_words = {w for ca in caa["issuers"] for w in CAA_ISSUER_NAMES.get(ca, ())}
+    if any(w in issuer_text for w in allowed_words):
+        return None
+    allowed = ", ".join(caa["issuers"])
+    return (f"The current certificate comes from {tls.get('issuer_org') or current_ca}, but CAA only allows {allowed}. "
+            "The next renewal from the current issuer will be refused unless CAA is updated.")
+
+
+# ---- 3d-5. Mail provider detection ---------------------------------------------------------------------
+INBOUND_PROVIDERS: tuple[tuple[str, str], ...] = (
+    (r"(^|\.)(google|googlemail)\.com$", "Google Workspace"),
+    (r"\.mail\.protection\.outlook\.com$", "Microsoft 365"),
+    (r"(^|\.)zoho(mail)?\.(com|in|eu|com\.au|jp|com\.cn)$", "Zoho Mail"),
+    (r"(^|\.)protonmail\.ch$", "Proton Mail"),
+    (r"(^|\.)messagingengine\.com$", "Fastmail"),
+    (r"(^|\.)mail\.icloud\.com$", "iCloud Mail"),
+    (r"(^|\.)yandex\.(net|ru)$", "Yandex 360"),
+    (r"(^|\.)mimecast\.(com|co\.za)$", "Mimecast"),
+    (r"(^|\.)(pphosted|ppe-hosted)\.com$", "Proofpoint"),
+    (r"(^|\.)barracudanetworks\.com$", "Barracuda"),
+    (r"(^|\.)iphmx\.com$", "Cisco Secure Email"),
+    (r"(^|\.)amazonaws\.com$", "Amazon WorkMail / SES"),
+    (r"(^|\.)secureserver\.net$", "GoDaddy Email"),
+    (r"(^|\.)privateemail\.com$", "Namecheap Private Email"),
+    (r"(^|\.)hostinger\.com$", "Hostinger Email"),
+    (r"(^|\.)emailsrvr\.com$", "Rackspace Email"),
+    (r"(^|\.)mailgun\.org$", "Mailgun"),
+)
+SENDER_INCLUDES: dict[str, str] = {
+    "_spf.google.com": "Google Workspace", "spf.protection.outlook.com": "Microsoft 365",
+    "zoho.com": "Zoho", "zoho.in": "Zoho", "zoho.eu": "Zoho", "zcsend.net": "Zoho Campaigns",
+    "_spf.protonmail.ch": "Proton Mail", "spf.messagingengine.com": "Fastmail", "icloud.com": "iCloud Mail",
+    "amazonses.com": "Amazon SES", "sendgrid.net": "SendGrid", "mailgun.org": "Mailgun",
+    "servers.mcsv.net": "Mailchimp", "spf.mandrillapp.com": "Mailchimp Transactional",
+    "spf.brevo.com": "Brevo", "spf.sendinblue.com": "Brevo", "spf.mtasv.net": "Postmark",
+    "mail.zendesk.com": "Zendesk", "_spf.salesforce.com": "Salesforce", "sparkpostmail.com": "SparkPost",
+    "spf.mailjet.com": "Mailjet", "helpscoutemail.com": "Help Scout", "_spf.elasticemail.com": "Elastic Email",
+    "spf.smtp2go.com": "SMTP2GO", "email.freshdesk.com": "Freshdesk", "_spf.resend.com": "Resend",
+}
+
+
+def detect_providers(domain: str, mail: dict, spf: dict) -> dict:
+    """Name the inbound mail service (from MX) and sending services (from SPF includes)."""
+    inbound: list[str] = []
+    for mx in (mail.get("mx") or []):
+        if mx.get("implicit"):
+            continue
+        host = mx["host"].lower()
+        name = next((label for pattern, label in INBOUND_PROVIDERS if re.search(pattern, host)), None)
+        if not name:
+            name = "Own mail server" if host == domain or host.endswith("." + domain) else f"Other ({host})"
+        if name not in inbound:
+            inbound.append(name)
+
+    senders: list[str] = []
+    for inc in (spf.get("includes") or []):
+        if inc.get("depth") != 1:
+            continue
+        target = inc["domain"].lower()
+        name = SENDER_INCLUDES.get(target) or next((v for k, v in SENDER_INCLUDES.items() if target.endswith("." + k)), None)
+        if name and name not in senders and name not in inbound:
+            senders.append(name)
+    return {"inbound": inbound, "senders": senders}
 
 
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
@@ -1007,29 +1260,54 @@ async def health() -> dict:
     return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "time": datetime.now(timezone.utc).isoformat()}
 
 
-@app.get("/api/v1/analyze")
-async def analyze(domain: str = Query(..., min_length=1, max_length=300, description="Domain to analyse, e.g. example.com")) -> dict:
+def _set_cdn_cache(response: Response, seconds: int) -> None:
+    """
+    Let Vercel's CDN keep this exact response (same URL incl. ?domain=) for a while.
+    Repeat checks are then answered from the edge: instant, and no function cost.
+    max-age=0 keeps browsers themselves from holding stale copies.
+    """
+    response.headers["Cache-Control"] = f"public, max-age=0, s-maxage={seconds}, stale-while-revalidate=60"
+
+
+def _clean_domain(domain: str) -> str:
     try:
-        clean = normalize_domain(domain)
+        return normalize_domain(domain)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+@app.get("/api/v1/analyze")
+async def analyze(response: Response,
+                  domain: str = Query(..., min_length=1, max_length=300, description="Domain to analyse, e.g. example.com")) -> dict:
+    clean = _clean_domain(domain)
+
     cached = _cache_get(clean)
     if cached:
+        _set_cdn_cache(response, 300)
         return {**cached, "cached": True}
 
     started = time.monotonic()
     log.info("Analysing %s", clean)
 
-    # All five sections run concurrently; total time ≈ the slowest one (usually SMTP).
-    dns_res, hosting_res, spf_res, dmarc_res, mail_res, tls_res = await asyncio.gather(
+    # All sections run concurrently; total time ≈ the slowest one.
+    dns_res, hosting_res, spf_res, dmarc_res, dkim_res, mail_res, tls_res, caa_res = await asyncio.gather(
         _safe("DNS", lookup_dns_records(clean), 15),
         _safe("Hosting", analyze_hosting(clean), 15),
         _safe("SPF", analyze_spf(clean), 20),
         _safe("DMARC", analyze_dmarc(clean), 15),
+        _safe("DKIM", analyze_dkim(clean), 15),
         _safe("Mail/SMTP", analyze_mail(clean), 45),
         _safe("TLS", analyze_tls(clean), 25),
+        _safe("CAA", analyze_caa(clean), 10),
     )
+
+    # CAA belongs with the certificate: show it in the SSL section and cross-check the issuer.
+    tls_res["caa"] = caa_res
+    mismatch = caa_vs_certificate(caa_res, tls_res)
+    if mismatch:
+        tls_res.setdefault("warnings", []).append(mismatch)
+        if tls_res.get("status") == "pass":
+            tls_res["status"] = "warn"
 
     result = {
         "domain": clean,
@@ -1038,10 +1316,54 @@ async def analyze(domain: str = Query(..., min_length=1, max_length=300, descrip
         "cached": False,
         "dns": dns_res,
         "hosting": hosting_res,
+        "providers": detect_providers(clean, mail_res, spf_res),
         "spf": spf_res,
         "dmarc": dmarc_res,
+        "dkim": dkim_res,
         "mail": mail_res,
         "tls": tls_res,
     }
     _cache_set(clean, result)
+    # A section that errored (timeout etc.) may succeed on retry, so cache those results briefly.
+    had_error = any(isinstance(v, dict) and v.get("status") == "error" for v in result.values())
+    _set_cdn_cache(response, 30 if had_error else 300)
     return result
+
+
+@app.get("/api/v1/dkim")
+async def dkim_selector(response: Response,
+                        domain: str = Query(..., min_length=1, max_length=300),
+                        selector: str = Query(..., min_length=1, max_length=63)) -> dict:
+    """Check one DKIM selector, e.g. the s= value from an email's DKIM-Signature header."""
+    clean = _clean_domain(domain)
+    selector = selector.strip().lower()
+    if not _SELECTOR_RE.match(selector):
+        raise HTTPException(status_code=400, detail="A selector is letters, digits, dots, hyphens or underscores, like 'selector1'.")
+    try:
+        found = await asyncio.wait_for(check_dkim_selector(clean, selector), timeout=10)
+    except (DNSLookupError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail=f"Lookup failed: {exc or 'timed out'}") from exc
+    _set_cdn_cache(response, 300)
+    return {"domain": clean, "selector": selector, "found": bool(found), "key": found}
+
+
+@app.get("/api/v1/spf/evaluate")
+async def spf_evaluate(response: Response,
+                       record: str = Query(..., min_length=6, max_length=2000),
+                       domain: str = Query("example.com", max_length=300)) -> dict:
+    """
+    Evaluate a draft SPF record (used by the SPF builder) without publishing it:
+    follows every include and counts DNS lookups exactly like the domain report.
+    """
+    clean = _clean_domain(domain or "example.com")
+    rec = " ".join(record.split())
+    if not _pick_spf([rec]):
+        raise HTTPException(status_code=400, detail="An SPF record starts with v=spf1.")
+    res: dict[str, Any] = {"record": rec, "lookup_limit": SPF_LOOKUP_LIMIT, "includes": [],
+                           "errors": [], "warnings": [], "notes": []}
+    try:
+        await asyncio.wait_for(_assess_spf(clean, rec, res), timeout=20)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Following the includes took too long. Try again.") from exc
+    _set_cdn_cache(response, 300)
+    return res
