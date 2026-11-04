@@ -703,10 +703,15 @@ async def analyze_mail(domain: str) -> dict:
 
     hosts = sorted((r.preference, r.exchange.to_text(omit_final_dot=True).lower()) for r in mx)
     if not hosts:
+        # No MX at all. RFC 5321 says senders then try the domain's own A/AAAA record.
+        if not await _ips_of(domain):
+            res["errors"].append("This domain cannot receive email: it has no MX record and no A/AAAA record to fall back to.")
+            res["status"] = "fail"
+            return res
         res["implicit_mx"] = True
         hosts = [(0, domain)]
-        res["warnings"].append("No MX record. Senders fall back to the domain's A record (implicit MX) — almost always a mistake.")
-    res["mx"] = [{"preference": p, "host": h, "ips": []} for p, h in hosts]
+        res["warnings"].append("No MX record. Senders fall back to the domain's own A record (implicit MX) — almost always a mistake.")
+    res["mx"] = [{"preference": p, "host": h, "ips": [], "implicit": res["implicit_mx"]} for p, h in hosts]
 
     # Resolve IPs for up to 3 MX hosts in parallel.
     host_ips = await asyncio.gather(*(_ips_of(h) for _, h in hosts[:3]))
