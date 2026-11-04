@@ -71,11 +71,12 @@
           <span class="display text-2xl font-extrabold">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
         </a>
         <!-- Tabs: the tools -->
-        <nav aria-label="Tools" class="flex flex-wrap gap-x-5 gap-y-2 text-[15px]">
-          <a href="#" data-nav="report" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
-          <a href="#propagation" data-nav="prop" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
-          <a href="#spf-builder" data-nav="spf" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
-          <a href="#dmarc-builder" data-nav="dmarc" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
+        <!-- On phones the tabs become one swipeable row instead of wrapping -->
+        <nav aria-label="Tools" class="-mx-4 flex w-[calc(100%+2rem)] gap-6 overflow-x-auto px-4 text-[15px] [scrollbar-width:none] sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden">
+          <a href="#" data-nav="report" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
+          <a href="#propagation" data-nav="prop" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
+          <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
+          <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
         </nav>
       </div>
 
@@ -392,7 +393,7 @@ function pill(status) {
 }
 
 /* ---- Copy to clipboard, with a select-the-text fallback ---- */
-async function copyText(text, btn, selectEl) {
+async function copyText(text, btn, selectEl, label = "Copy") {
   try {
     await navigator.clipboard.writeText(text);
     btn.textContent = "Copied";
@@ -402,9 +403,9 @@ async function copyText(text, btn, selectEl) {
       range.selectNodeContents(selectEl);
       const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
     }
-    btn.textContent = "Selected, press Ctrl+C";
+    btn.textContent = selectEl ? "Selected, press Ctrl+C" : "Couldn't copy";
   }
-  setTimeout(() => (btn.textContent = "Copy"), 1800);
+  setTimeout(() => (btn.textContent = label), 1800);
 }
 function copyButton(text, selectEl) {
   const btn = el("button", "rounded-md px-2 py-1 text-xs font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Copy");
@@ -531,11 +532,11 @@ const RAIL = [
 function renderRail(data, pending = false) {
   const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-7");
   rail.setAttribute("aria-label", "Results summary");
-  RAIL.forEach(([name, target, statusOf, verdictOf]) => {
+  RAIL.forEach(([name, target, statusOf, verdictOf], index) => {
     const status = pending ? "pending" : statusOf(data) || "error";
     let verdict = "Checking…";
     if (!pending) { try { verdict = verdictOf(data); } catch { verdict = st(status).word; } }
-    const a = el("a", "group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
+    const a = el("a", `group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4 ${index === 0 ? "col-span-2 lg:col-span-1" : ""}`);
     a.href = `#${target}`;
     a.addEventListener("click", (e) => { e.preventDefault(); $(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
     add(a,
@@ -603,17 +604,32 @@ function relativeChecked(data) {
 function renderHero(data, { pending = false } = {}) {
   const hero = $("hero");
   hero.replaceChildren();
-  add(hero, el("h2", "display break-anywhere text-4xl font-extrabold leading-[1.05] text-navy sm:text-6xl", data.domain));
+  add(hero, el("h2", "display break-anywhere text-[2rem] font-extrabold leading-[1.08] text-navy sm:text-5xl lg:text-6xl", data.domain));
   if (pending) add(hero, el("p", "mt-4 text-lg text-ink/60", "Looking up registration, DNS, hosting, mail and certificate details…"));
   else add(hero, renderHosting(data.hosting), factsLines(data));
   const rail = renderRail(data, pending);
   add(hero, rail);
   requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
   if (!pending) {
-    add(hero, add(el("div", "mt-7 flex flex-wrap items-center gap-x-4 gap-y-3"),
+    const share = actionButton("Copy report link", () => {
+      const link = `${location.origin}${location.pathname}?domain=${encodeURIComponent(data.domain)}`;
+      copyText(link, share, null, "Copy report link");
+    });
+    add(hero, add(el("div", "mt-7 flex flex-wrap items-center gap-x-3 gap-y-3"),
+      share,
       actionButton("Check propagation", () => openPropagation(data.domain)),
-      el("p", "text-xs text-ink/50", relativeChecked(data))));
+      el("p", "w-full text-xs text-ink/50 sm:ml-2 sm:w-auto", relativeChecked(data))));
   }
+}
+
+/** Grey placeholder sections shown while a report loads, so the page doesn't jump. */
+function skeletonSections() {
+  const bar = (w) => el("div", `h-3 rounded-full bg-canvas ${w}`);
+  const block = () => add(el("div", "space-y-3 p-6 sm:p-8"),
+    el("div", "mb-5 h-5 w-40 rounded-full bg-canvas"), bar("w-full"), bar("w-11/12"), bar("w-3/4"), bar("w-5/6"));
+  const wrap = el("div", "animate-pulse");
+  wrap.setAttribute("aria-hidden", "true");
+  return add(wrap, fullRow(block()), pairRow(block(), block()), pairRow(block(), block()));
 }
 
 /* =====================================================================
@@ -897,23 +913,32 @@ function renderNameservers(n) {
   const { wrap, body } = section("sec-ns", "Nameservers", n.status || "error", verdict);
   add(body, findings(n));
   if (!servers.length) return wrap;
-  const table = el("div", "overflow-x-auto");
-  const t = el("table", "w-full min-w-[34rem] text-left text-[14px]");
-  const head = add(el("tr", "border-b border-rule text-[13px] text-ink/60"),
-    ...["Nameserver", "State", "SOA serial", "Response"].map((h) => el("th", "py-2 pr-4 font-normal", h)));
-  const tbody = el("tbody");
+  // A responsive list: columns from tablet width up, stacked rows on phones (no sideways scrolling).
+  const COLS = "sm:grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem]";
+  const list = el("div", "divide-y divide-rule/70");
+  list.setAttribute("role", "table");
+  list.setAttribute("aria-label", "Nameserver checks");
+  const head = add(el("div", `hidden gap-4 pb-2 text-[13px] text-ink/60 sm:grid ${COLS}`),
+    ...["Nameserver", "State", "SOA serial", "Response"].map((h) => el("div", "", h)));
+  head.setAttribute("role", "row");
+  add(list, head);
   servers.forEach((s) => {
     const state = !s.reachable ? ["fail", "No answer"] : s.authoritative ? ["pass", "Authoritative"] : ["fail", "Not authoritative"];
     const stateEl = el("span", `inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(state[0]).pill}`, state[1]);
     if (s.error) stateEl.title = s.error;
-    add(tbody, add(el("tr", "border-b border-rule/60 last:border-0 align-top"),
-      add(el("td", "py-2.5 pr-4"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", s.host), el("div", "font-mono text-[12px] text-ink/60", s.ip || "no IPv4")),
-      add(el("td", "py-2.5 pr-4"), stateEl),
-      el("td", "tabular py-2.5 pr-4 font-mono text-[13px]", s.serial ?? "—"),
-      el("td", "tabular py-2.5 font-mono text-[13px]", s.rtt_ms != null ? `${s.rtt_ms} ms` : "—")));
+    const rowEl = el("div", `grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1.5 py-3 ${COLS}`);
+    rowEl.setAttribute("role", "row");
+    add(list, add(rowEl,
+      add(el("div", "min-w-0"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", s.host), el("div", "font-mono text-[12px] text-ink/60", s.ip || "no IPv4")),
+      add(el("div", "justify-self-end sm:justify-self-start"), stateEl),
+      // Phones: one quiet detail line. Tablet and up: two separate columns.
+      el("div", "tabular col-span-2 font-mono text-[12px] text-ink/60 sm:hidden",
+        `SOA serial ${s.serial ?? "—"}${s.rtt_ms != null ? `, ${s.rtt_ms} ms` : ""}`),
+      el("div", "tabular hidden font-mono text-[13px] sm:block", s.serial ?? "—"),
+      el("div", "tabular hidden font-mono text-[13px] sm:block", s.rtt_ms != null ? `${s.rtt_ms} ms` : "—")));
+    if (s.error) add(list.lastChild, el("p", "col-span-2 text-[13px] text-fail sm:col-span-4", s.error));
   });
-  add(t, add(el("thead"), head), tbody);
-  add(body, add(table, t));
+  add(body, list);
   if (n.zone) add(body, el("p", "text-[13px] text-ink/60", `Each server was asked directly for the SOA record of ${n.zone}.`));
   return wrap;
 }
@@ -959,17 +984,23 @@ function renderPropagation(p) {
   const head = el("div", "p-6 sm:p-10");
   add(head,
     add(el("div", "flex flex-wrap items-center gap-3"),
-      el("h2", "display break-anywhere text-3xl font-extrabold leading-tight text-navy sm:text-4xl", p.domain),
+      el("h2", "display break-anywhere text-[1.75rem] font-extrabold leading-tight text-navy sm:text-4xl", p.domain),
       el("span", "rounded-md bg-canvas px-2 py-1 font-mono text-sm font-semibold text-blue", p.type),
       pill(p.status)),
     el("p", "mt-3 max-w-3xl text-[15px] text-navy", p.summary));
   add(sheet, head);
 
-  const wrap = el("div", "overflow-x-auto border-t border-rule px-6 pb-6 sm:px-10 sm:pb-8");
-  const t = el("table", "w-full min-w-[40rem] text-left text-[14px]");
-  add(t, add(el("thead"), add(el("tr", "border-b border-rule text-[13px] text-ink/60"),
-    ...["Resolver", "Answer", "TTL", "Time", ""].map((h) => el("th", "py-3 pr-4 font-normal", h)))));
-  const tbody = el("tbody");
+  // Responsive list: five columns from tablet width up; on phones each resolver is a
+  // compact block (name + verdict, then the answer, then TTL and timing).
+  const COLS = "sm:grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_4.5rem_4.5rem_5.5rem]";
+  const wrap = el("div", "border-t border-rule px-6 pb-6 sm:px-10 sm:pb-8");
+  const list = el("div", "divide-y divide-rule/70");
+  list.setAttribute("role", "table");
+  list.setAttribute("aria-label", `${p.type} record answers by resolver`);
+  const colHead = add(el("div", `hidden gap-4 py-3 text-[13px] text-ink/60 sm:grid ${COLS}`),
+    ...["Resolver", "Answer", "TTL", "Time", ""].map((h) => el("div", "", h)));
+  colHead.setAttribute("role", "row");
+  add(list, colHead);
   const addRow = (r, isAuth) => {
     const answer = r.error ? el("span", "text-fail", r.error)
       : r.rcode !== "NOERROR" ? el("span", "font-mono text-warn", r.rcode)
@@ -979,17 +1010,21 @@ function renderPropagation(p) {
       : r.matches === true ? el("span", "text-xs font-semibold text-pass", "Matches")
       : r.matches === false ? el("span", "text-xs font-semibold text-warn", "Different")
       : el("span", "text-xs font-semibold text-ink/50", "No answer");
-    add(tbody, add(el("tr", `border-b border-rule/60 align-top last:border-0 ${isAuth ? "bg-sky/5" : ""}`),
-      add(el("td", "py-3 pr-4"), el("div", "break-anywhere font-semibold text-navy", r.name), el("div", "text-[12px] text-ink/60", isAuth ? "Your authoritative nameserver" : `${r.location}, ${r.ip}`)),
-      add(el("td", "min-w-0 py-3 pr-4"), answer),
-      el("td", "tabular py-3 pr-4 font-mono text-[13px]", r.ttl != null ? `${r.ttl} s` : "—"),
-      el("td", "tabular py-3 pr-4 font-mono text-[13px]", r.rtt_ms != null ? `${r.rtt_ms} ms` : "—"),
-      add(el("td", "py-3"), match)));
+    const ttl = r.ttl != null ? `${r.ttl} s` : "—", time = r.rtt_ms != null ? `${r.rtt_ms} ms` : "—";
+    const rowEl = el("div", `grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1.5 py-3 ${COLS} ${isAuth ? "-mx-3 rounded-lg bg-sky/5 px-3" : ""}`);
+    rowEl.setAttribute("role", "row");
+    add(list, add(rowEl,
+      add(el("div", "order-1 min-w-0"), el("div", "break-anywhere font-semibold text-navy", r.name),
+          el("div", "break-anywhere text-[12px] text-ink/60", isAuth ? "Your authoritative nameserver" : `${r.location}, ${r.ip}`)),
+      add(el("div", "order-2 justify-self-end sm:order-5 sm:justify-self-start"), match),
+      add(el("div", "order-3 col-span-2 min-w-0 sm:order-2 sm:col-span-1"), answer),
+      el("div", "tabular order-4 col-span-2 font-mono text-[12px] text-ink/60 sm:hidden", `TTL ${ttl}, ${time}`),
+      el("div", "tabular hidden font-mono text-[13px] sm:order-3 sm:block", ttl),
+      el("div", "tabular hidden font-mono text-[13px] sm:order-4 sm:block", time)));
   };
   if (p.authoritative) addRow(p.authoritative, true);
   (p.resolvers || []).forEach((r) => addRow(r, false));
-  add(t, tbody);
-  add(sheet, add(wrap, t));
+  add(sheet, add(wrap, list));
   add(sheet, add(el("div", "flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-rule px-6 py-5 sm:px-10"),
     actionButton("Check again", () => runPropagation(p.domain, p.type)),
     el("p", "text-[13px] text-ink/60", `${p.note} Results can be up to 30 seconds old.`)));
@@ -1368,6 +1403,7 @@ async function analyze(domain) {
   $("report").classList.remove("hidden");
   $("sections").replaceChildren();
   renderHero({ domain }, { pending: true });
+  $("sections").replaceChildren(skeletonSections());
   setLoading(true);
 
   const controller = new AbortController();
