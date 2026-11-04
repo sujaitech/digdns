@@ -4,116 +4,130 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DigDNS — DNS & Mail Diagnostics</title>
-  <meta name="description" content="Check a domain's DNS, hosting, SPF, DMARC, mail servers and SSL certificate in one report." />
+  <meta name="description" content="Check a domain's DNS, hosting, SPF, DKIM, DMARC, mail servers and SSL in one report, and build SPF and DMARC records." />
   <meta name="theme-color" content="#262262" />
-  <!-- Favicon: navy circle with a sky-blue check, inline so there's no extra file -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23262262'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='%2327AAE1' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 
-  <!-- Fonts: Archivo (variable width — the extra-wide cut echoes the logo's wordmark)
-       and JetBrains Mono for raw DNS data only. -->
+  <!-- Fonts: Archivo (its extra-wide cut echoes the logo wordmark) + JetBrains Mono for raw DNS data -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
 
-  <!-- Tailwind CSS v4 browser build: generates CSS for classes on the page, including ones JS adds later -->
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <!-- Tailwind CSS v4 browser build (pinned version) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.11"></script>
 
-  <!-- Design tokens. Each --color-x becomes classes like bg-x, text-x, border-x. -->
+  <!-- Design tokens: each --color-x becomes bg-x / text-x / border-x classes -->
   <style type="text/tailwindcss">
     @theme {
       --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
       --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-      --color-navy:   #262262;  /* logo circle + wordmark: header, headings   */
-      --color-sky:    #27AAE1;  /* logo swoosh: button, focus, info           */
-      --color-blue:   #1679A8;  /* darker sky — for TEXT on white (4.8:1)     */
-      --color-orange: #F7941D;  /* logo tagline dots: tiny accents only       */
-      --color-canvas: #EEF1F7;  /* page background, cool grey tied to navy    */
-      --color-ink:    #29284A;  /* body text, navy-tinted                     */
-      --color-rule:   #DDE2EC;  /* dividers inside the report sheet           */
+      --color-navy:   #262262;  /* logo circle + wordmark */
+      --color-sky:    #27AAE1;  /* logo swoosh: buttons, focus, info */
+      --color-blue:   #1679A8;  /* darker sky for text on white (4.8:1) */
+      --color-orange: #F7941D;  /* logo tagline dots: tiny accents only */
+      --color-canvas: #EEF1F7;  /* page background */
+      --color-ink:    #29284A;  /* body text */
+      --color-rule:   #DDE2EC;  /* dividers */
 
-      /* Status colours stay green/amber/red: people read them instantly. */
       --color-pass: #13795B;  --color-pass-tint: #E6F4EE;
       --color-warn: #A85A06;  --color-warn-tint: #FDF2E1;
       --color-fail: #C0261B;  --color-fail-tint: #FCEBE9;
     }
   </style>
   <style>
-    /* Wide display cut of Archivo — the page's one typographic flourish */
+    body { background: #EEF1F7; color: #29284A; }
     .display { font-stretch: 125%; letter-spacing: -0.01em; }
     .semi-wide { font-stretch: 112%; }
     .break-anywhere { overflow-wrap: anywhere; }
+    h1, h2, h3 { text-wrap: balance; }
+    .tabular { font-variant-numeric: tabular-nums; }
 
-    /* Health rail: bars grow left-to-right once, when results arrive.
-       This is the only automatic motion on the page. */
+    /* Health rail: bars grow once when results arrive — the page's only automatic motion */
     .rail-bar { transform: scaleX(0); transform-origin: left; transition: transform .55s cubic-bezier(.2,.8,.2,1); }
     .rail-ready .rail-bar { transform: scaleX(1); }
     @media (prefers-reduced-motion: reduce) {
       .rail-bar { transition: none; transform: none; }
-      .animate-pulse { animation: none; }
+      .animate-pulse, .animate-spin { animation: none; }
     }
+
+    /* Custom checkbox/radio cards in the builders */
+    .choice:has(input:checked) { border-color: #27AAE1; background: rgba(39,170,225,.08); }
+    .choice:has(input:focus-visible) { outline: 2px solid #27AAE1; outline-offset: 2px; }
   </style>
 </head>
 <body class="min-h-screen bg-canvas font-sans text-ink antialiased">
 
-  <!-- ================= HEADER + SEARCH ================= -->
+  <!-- ================= HEADER ================= -->
   <header class="bg-navy pb-24 text-white">
-    <div class="mx-auto max-w-5xl px-4 pt-8 sm:px-6">
-      <div class="flex items-baseline justify-between gap-4">
-        <a href="/" class="display text-2xl font-extrabold focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
+    <div class="mx-auto max-w-5xl px-4 pt-7 sm:px-6">
+      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <a href="#" data-nav="report" class="display text-2xl font-extrabold focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
           Dig<span class="text-sky">DNS</span><span class="text-orange">.</span>
         </a>
-        <a href="https://github.com/sujaitech/digdns" class="text-sm text-white/70 underline-offset-4 hover:text-white hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Source on GitHub</a>
+        <!-- Tabs: the three tools -->
+        <nav aria-label="Tools" class="flex gap-5 text-[15px]">
+          <a href="#" data-nav="report" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
+          <a href="#spf-builder" data-nav="spf" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
+          <a href="#dmarc-builder" data-nav="dmarc" class="tab border-b-2 border-transparent pb-1 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
+        </nav>
       </div>
 
-      <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">
-        Check a domain’s DNS, mail and SSL in one report
-      </h1>
+      <!-- Header block: domain report -->
+      <div id="head-report">
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Check a domain’s DNS, mail and SSL in one report</h1>
+        <form id="search-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+          <label for="domain-input" class="sr-only">Domain to check</label>
+          <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
+                 placeholder="example.com" required maxlength="253"
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+          <button id="search-btn" type="submit"
+                  class="inline-flex items-center justify-center gap-2 rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">
+            <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
+              <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+            </svg>
+            <span id="btn-label">Check domain</span>
+          </button>
+        </form>
+        <div id="try-row" class="mt-4 flex flex-wrap items-center gap-2 text-sm text-white/70">
+          <span>Try</span>
+          <button type="button" data-try="google.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">google.com</button>
+          <button type="button" data-try="github.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">github.com</button>
+          <button type="button" data-try="cloudflare.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">cloudflare.com</button>
+          <span class="mx-1 text-white/30" aria-hidden="true">|</span>
+          <button type="button" id="sample-btn" class="text-white underline underline-offset-4 hover:text-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">See a sample report</button>
+        </div>
+      </div>
 
-      <form id="search-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
-        <label for="domain-input" class="sr-only">Domain to check</label>
-        <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
-               placeholder="example.com" required maxlength="253"
-               class="flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
-        <button id="search-btn" type="submit"
-                class="inline-flex items-center justify-center gap-2 rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">
-          <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
-            <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
-          </svg>
-          <span id="btn-label">Check domain</span>
-        </button>
-      </form>
+      <!-- Header block: SPF builder -->
+      <div id="head-spf" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Build an SPF record</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Pick the services that send email for your domain. The record and its DNS lookup count update as you go, using the same check as the domain report.</p>
+      </div>
 
-      <!-- Quick picks (hidden once a report is showing) -->
-      <div id="try-row" class="mt-4 flex flex-wrap items-center gap-2 text-sm text-white/70">
-        <span>Try</span>
-        <button type="button" data-try="google.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">google.com</button>
-        <button type="button" data-try="github.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">github.com</button>
-        <button type="button" data-try="cloudflare.com" class="rounded-full bg-white/10 px-3 py-1 font-mono text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">cloudflare.com</button>
-        <span class="mx-1 text-white/30" aria-hidden="true">|</span>
-        <button type="button" id="sample-btn" class="text-white underline underline-offset-4 hover:text-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">See a sample report</button>
+      <!-- Header block: DMARC builder -->
+      <div id="head-dmarc" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Build a DMARC record</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Choose how receivers should treat mail that fails SPF and DKIM, and where to send reports. Start with monitoring, then tighten.</p>
       </div>
     </div>
   </header>
 
-  <!-- ================= REPORT ================= -->
-  <main class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <!-- Error banner -->
+  <!-- ================= VIEW: DOMAIN REPORT ================= -->
+  <main id="view-report" class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <div id="error-box" role="alert" class="mb-4 hidden rounded-xl border border-fail/30 bg-white p-5 text-fail shadow-sm"></div>
 
-    <!-- Intro shown before the first check -->
     <section id="intro" class="rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-10">
       <h2 class="semi-wide text-xl font-bold text-navy">What the report covers</h2>
       <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
-        <p><strong class="text-navy">Hosting.</strong> Which server or network serves the website, from reverse DNS and IP ownership.</p>
-        <p><strong class="text-navy">DNS records.</strong> A, AAAA, MX, TXT, CNAME, NS, SOA and common SRV names.</p>
-        <p><strong class="text-navy">SPF and DMARC.</strong> Syntax, the 10-lookup limit across every include, and policy strength.</p>
-        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, plus certificate issuer, expiry and covered names.</p>
+        <p><strong class="text-navy">Hosting and email provider.</strong> Which server or network serves the website, and which service handles its email.</p>
+        <p><strong class="text-navy">DNS records.</strong> A, AAAA, MX, TXT, CNAME, NS, SOA, CAA and common SRV names.</p>
+        <p><strong class="text-navy">SPF, DKIM and DMARC.</strong> Syntax, the 10-lookup limit, key strength and policy, with builders to fix what’s wrong.</p>
+        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, plus certificate expiry, covered names and allowed issuers.</p>
       </div>
     </section>
 
-    <!-- The report sheet (filled in by JavaScript) -->
     <article id="report" class="hidden overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
       <div id="sample-banner" class="hidden bg-orange/15 px-6 py-2.5 text-sm text-ink sm:px-10">
         This is a sample report with made-up data for a fictional domain. Enter a real domain above to run a live check.
@@ -121,6 +135,183 @@
       <div id="hero" class="p-6 sm:p-10"></div>
       <div id="sections"></div>
     </article>
+  </main>
+
+  <!-- ================= VIEW: SPF BUILDER ================= -->
+  <main id="view-spf" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
+      <form id="spf-form" class="min-w-0 space-y-8 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
+        <div>
+          <label for="spf-domain" class="semi-wide block text-lg font-bold text-navy">Your domain</label>
+          <p class="mt-1 text-sm text-ink/70">Used to count lookups for <span class="font-mono">a</span> and <span class="font-mono">mx</span>. Leave blank if you only want the record text.</p>
+          <input id="spf-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="example.com"
+                 class="mt-3 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+        </div>
+
+        <fieldset>
+          <legend class="semi-wide text-lg font-bold text-navy">Services that send your email</legend>
+          <p class="mt-1 text-sm text-ink/70">Each one adds an <span class="font-mono">include:</span>. Confirm the exact value in the provider’s own setup guide.</p>
+          <div id="spf-providers" class="mt-4 grid gap-2 sm:grid-cols-2"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend class="semi-wide text-lg font-bold text-navy">Your own servers</legend>
+          <div class="mt-4 grid gap-2 sm:grid-cols-2">
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input id="spf-a" type="checkbox" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">The website’s server</span><span class="block text-xs text-ink/60">Adds <span class="font-mono">a</span>: the IPs in the domain’s A record. 1 lookup.</span></span>
+            </label>
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input id="spf-mx" type="checkbox" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">The mail (MX) servers</span><span class="block text-xs text-ink/60">Adds <span class="font-mono">mx</span>. 1 lookup.</span></span>
+            </label>
+          </div>
+          <label for="spf-ips" class="mt-5 block font-semibold text-navy">IP addresses or ranges</label>
+          <p class="mt-0.5 text-sm text-ink/70">One per line, e.g. <span class="font-mono">203.0.113.5</span> or <span class="font-mono">2001:db8::/48</span>. IPs cost no lookups.</p>
+          <textarea id="spf-ips" rows="3" spellcheck="false" class="mt-2 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20"></textarea>
+          <p id="spf-ips-error" class="mt-1 hidden text-sm text-fail"></p>
+          <label for="spf-other" class="mt-5 block font-semibold text-navy">Other includes or terms</label>
+          <p class="mt-0.5 text-sm text-ink/70">Space-separated, e.g. <span class="font-mono">include:_spf.example.net</span>. A bare domain becomes an include.</p>
+          <input id="spf-other" type="text" spellcheck="false" autocapitalize="off" class="mt-2 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+        </fieldset>
+
+        <fieldset>
+          <legend class="semi-wide text-lg font-bold text-navy">Mail from anywhere else</legend>
+          <div class="mt-4 grid gap-2">
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="spf-all" value="~" checked class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Soft fail <span class="font-mono font-normal">~all</span></span><span class="block text-sm text-ink/70">Mark it as suspicious. The safe choice while you confirm every sender is listed.</span></span>
+            </label>
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="spf-all" value="-" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Fail <span class="font-mono font-normal">-all</span></span><span class="block text-sm text-ink/70">Tell receivers to reject it. Use once you’re sure nothing legitimate is missing.</span></span>
+            </label>
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="spf-all" value="?" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Neutral <span class="font-mono font-normal">?all</span></span><span class="block text-sm text-ink/70">No opinion. Gives almost no protection.</span></span>
+            </label>
+          </div>
+        </fieldset>
+      </form>
+
+      <aside class="lg:sticky lg:top-6" aria-live="polite">
+        <div class="rounded-2xl bg-navy p-6 text-white shadow-[0_8px_24px_rgba(38,34,98,.25)]">
+          <h2 class="semi-wide text-lg font-bold">Your SPF record</h2>
+          <div class="relative mt-4 rounded-lg bg-white/10">
+            <pre id="spf-output" class="whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed"></pre>
+            <button type="button" id="spf-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-navy hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
+          </div>
+          <div class="mt-5">
+            <div class="mb-1.5 flex justify-between text-[13px]">
+              <span class="text-white/70">DNS lookups</span>
+              <span id="spf-count" class="tabular font-semibold">—</span>
+            </div>
+            <div class="h-2 overflow-hidden rounded-full bg-white/15"><div id="spf-meter" class="h-full rounded-full bg-sky transition-[width] duration-300" style="width:0%"></div></div>
+          </div>
+          <ul id="spf-findings" class="mt-4 space-y-2 text-[13px]"></ul>
+          <h3 class="mt-6 text-sm font-semibold text-sky">Add it to your DNS</h3>
+          <dl id="spf-dns" class="mt-2 grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1.5 text-[13px]"></dl>
+          <p class="mt-4 text-[13px] leading-snug text-white/70">A domain must have only one SPF record. If one exists, replace it rather than adding a second.</p>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ================= VIEW: DMARC BUILDER ================= -->
+  <main id="view-dmarc" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
+      <form id="dmarc-form" class="min-w-0 space-y-8 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
+        <div>
+          <label for="dmarc-domain" class="semi-wide block text-lg font-bold text-navy">Your domain</label>
+          <input id="dmarc-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="example.com"
+                 class="mt-3 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+        </div>
+
+        <fieldset>
+          <legend class="semi-wide text-lg font-bold text-navy">What happens to mail that fails</legend>
+          <div class="mt-4 grid gap-2">
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="dmarc-p" value="none" checked class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Monitor only <span class="font-mono font-normal">p=none</span></span><span class="block text-sm text-ink/70">Deliver it as usual and send you reports. Start here.</span></span>
+            </label>
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="dmarc-p" value="quarantine" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Send to spam <span class="font-mono font-normal">p=quarantine</span></span><span class="block text-sm text-ink/70">Failing mail lands in the junk folder.</span></span>
+            </label>
+            <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
+              <input type="radio" name="dmarc-p" value="reject" class="mt-1 accent-[#1679A8]" />
+              <span><span class="font-semibold text-navy">Reject <span class="font-mono font-normal">p=reject</span></span><span class="block text-sm text-ink/70">Failing mail is refused outright. Full spoofing protection.</span></span>
+            </label>
+          </div>
+          <div id="dmarc-pct-wrap" class="mt-4 hidden">
+            <label for="dmarc-pct" class="font-semibold text-navy">Apply to <span id="dmarc-pct-value" class="tabular">100</span>% of failing mail</label>
+            <input id="dmarc-pct" type="range" min="5" max="100" step="5" value="100" class="mt-2 w-full accent-[#1679A8]" />
+            <p class="text-sm text-ink/70">Lower it to phase in a stricter policy gradually. The rest is treated one level softer.</p>
+          </div>
+        </fieldset>
+
+        <div class="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label for="dmarc-sp" class="font-semibold text-navy">Subdomains</label>
+            <select id="dmarc-sp" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+              <option value="">Same as the domain</option>
+              <option value="none">Monitor only</option>
+              <option value="quarantine">Send to spam</option>
+              <option value="reject">Reject</option>
+            </select>
+          </div>
+          <div>
+            <label for="dmarc-fo" class="font-semibold text-navy">Failure reports</label>
+            <select id="dmarc-fo" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+              <option value="">When SPF and DKIM both fail (default)</option>
+              <option value="1">When either SPF or DKIM fails</option>
+            </select>
+          </div>
+        </div>
+
+        <fieldset>
+          <legend class="semi-wide text-lg font-bold text-navy">Reports</legend>
+          <label for="dmarc-rua" class="mt-4 block font-semibold text-navy">Send daily summary reports to</label>
+          <p class="mt-0.5 text-sm text-ink/70">Comma-separated email addresses. These reports show every server sending as your domain.</p>
+          <input id="dmarc-rua" type="text" spellcheck="false" autocapitalize="off" placeholder="dmarc@example.com" class="mt-2 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+          <label for="dmarc-ruf" class="mt-5 block font-semibold text-navy">Send individual failure reports to <span class="font-normal text-ink/60">(optional)</span></label>
+          <p class="mt-0.5 text-sm text-ink/70">Few providers send these, and they can contain message details.</p>
+          <input id="dmarc-ruf" type="text" spellcheck="false" autocapitalize="off" class="mt-2 w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+        </fieldset>
+
+        <div class="grid gap-5 sm:grid-cols-2">
+          <div>
+            <label for="dmarc-adkim" class="font-semibold text-navy">DKIM alignment</label>
+            <select id="dmarc-adkim" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+              <option value="r">Relaxed: subdomains count</option>
+              <option value="s">Strict: exact domain only</option>
+            </select>
+          </div>
+          <div>
+            <label for="dmarc-aspf" class="font-semibold text-navy">SPF alignment</label>
+            <select id="dmarc-aspf" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+              <option value="r">Relaxed: subdomains count</option>
+              <option value="s">Strict: exact domain only</option>
+            </select>
+          </div>
+        </div>
+      </form>
+
+      <aside class="lg:sticky lg:top-6" aria-live="polite">
+        <div class="rounded-2xl bg-navy p-6 text-white shadow-[0_8px_24px_rgba(38,34,98,.25)]">
+          <h2 class="semi-wide text-lg font-bold">Your DMARC record</h2>
+          <div class="relative mt-4 rounded-lg bg-white/10">
+            <pre id="dmarc-output" class="whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed"></pre>
+            <button type="button" id="dmarc-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-navy hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
+          </div>
+          <ul id="dmarc-findings" class="mt-4 space-y-2 text-[13px]"></ul>
+          <h3 class="mt-6 text-sm font-semibold text-sky">Add it to your DNS</h3>
+          <dl id="dmarc-dns" class="mt-2 grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1.5 text-[13px]"></dl>
+          <h3 class="mt-6 text-sm font-semibold text-sky">Safe rollout</h3>
+          <ol id="dmarc-steps" class="mt-2 space-y-2 text-[13px]"></ol>
+        </div>
+      </aside>
+    </div>
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
@@ -131,15 +322,13 @@
 /* =====================================================================
    CONFIG
    ===================================================================== */
-// Empty string = same domain as this page (Vercel serves both page and API).
-const API_BASE = "";
-const REQUEST_TIMEOUT_MS = 65000; // a little longer than the function's 60 s limit (vercel.json)
+const API_BASE = "";                 // same domain as this page (Vercel serves both)
+const REQUEST_TIMEOUT_MS = 65000;    // a little longer than the 60 s function limit
 
 /* =====================================================================
    DOM helpers
-   SECURITY: DNS data (TXT records especially) is written by whoever owns
-   the domain being checked. Everything goes in via textContent, never
-   innerHTML, so a malicious record can't inject scripts into this page.
+   SECURITY: DNS data is written by whoever owns the domain being checked.
+   Everything goes in via textContent, never innerHTML.
    ===================================================================== */
 const $ = (id) => document.getElementById(id);
 
@@ -149,58 +338,63 @@ function el(tag, className = "", text) {
   if (text !== undefined && text !== null) node.textContent = String(text);
   return node;
 }
-
 function add(parent, ...children) {
   children.flat().forEach((c) => c && parent.appendChild(c));
   return parent;
 }
+const listFormat = (items) => new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(items);
 
-/* ---- Status styling ----------------------------------------------- */
+/* ---- Status styling ---- */
 const STATUS = {
-  pass:    { word: "Pass",     pill: "bg-pass-tint text-pass",  bar: "bg-pass" },
-  warn:    { word: "Warning",  pill: "bg-warn-tint text-warn",  bar: "bg-warn" },
-  fail:    { word: "Fail",     pill: "bg-fail-tint text-fail",  bar: "bg-fail" },
-  error:   { word: "Error",    pill: "bg-fail-tint text-fail",  bar: "bg-fail" },
-  info:    { word: "Info",     pill: "bg-sky/15 text-blue",     bar: "bg-sky" },
-  pending: { word: "Checking", pill: "bg-canvas text-ink/60",   bar: "bg-rule animate-pulse" },
+  pass:    { word: "Pass",     pill: "bg-pass-tint text-pass", text: "text-pass", bar: "bg-pass" },
+  warn:    { word: "Warning",  pill: "bg-warn-tint text-warn", text: "text-warn", bar: "bg-warn" },
+  fail:    { word: "Fail",     pill: "bg-fail-tint text-fail", text: "text-fail", bar: "bg-fail" },
+  error:   { word: "Error",    pill: "bg-fail-tint text-fail", text: "text-fail", bar: "bg-fail" },
+  info:    { word: "Info",     pill: "bg-sky/15 text-blue",    text: "text-blue", bar: "bg-sky" },
+  pending: { word: "Checking", pill: "bg-canvas text-ink/60",  text: "text-ink/50", bar: "bg-rule animate-pulse" },
 };
 const st = (s) => STATUS[s] || STATUS.info;
-
 function pill(status) {
   return el("span", `inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(status).pill}`, st(status).word);
 }
 
-/** A small "Copy" button for raw records. */
-function copyButton(text) {
+/* ---- Copy to clipboard, with a select-the-text fallback ---- */
+async function copyText(text, btn, selectEl) {
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied";
+  } catch {
+    if (selectEl) {
+      const range = document.createRange();
+      range.selectNodeContents(selectEl);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
+    btn.textContent = "Selected, press Ctrl+C";
+  }
+  setTimeout(() => (btn.textContent = "Copy"), 1800);
+}
+function copyButton(text, selectEl) {
   const btn = el("button", "rounded-md px-2 py-1 text-xs font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Copy");
   btn.type = "button";
-  btn.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
-    catch { btn.textContent = "Copy failed"; }
-    setTimeout(() => (btn.textContent = "Copy"), 1600);
-  });
+  btn.addEventListener("click", () => copyText(text, btn, selectEl));
   return btn;
 }
-
-/** Raw record shown as code, with a copy button. */
 function recordBlock(text) {
   const wrap = el("div", "relative rounded-lg bg-canvas");
   const pre = el("pre", "whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed text-navy", text);
-  const btn = copyButton(text);
+  const btn = copyButton(text, pre);
   btn.classList.add("absolute", "right-2", "top-2");
   return add(wrap, pre, btn);
 }
 
-/** Label/value line inside a section. */
 function row(label, value, mono = false) {
   const r = el("div", "grid grid-cols-[minmax(7rem,38%)_1fr] gap-3 border-b border-rule/70 py-2 last:border-0");
   add(r, el("div", "text-ink/60", label));
   const v = value instanceof Node ? value : el("div", "", value ?? "—");
-  v.className += ` break-anywhere text-ink ${mono ? "font-mono text-[13px]" : ""}`;
+  v.className += ` min-w-0 break-anywhere text-ink ${mono ? "font-mono text-[13px]" : ""}`;
   return add(r, v);
 }
 
-/** Errors, warnings and notes as a list of plain sentences with a coloured edge. */
 function findings(section) {
   const items = [
     ...(section.errors || []).map((t) => ["border-fail bg-fail-tint/60", t]),
@@ -212,20 +406,21 @@ function findings(section) {
   items.forEach(([cls, t]) => add(list, el("li", `break-anywhere rounded-r-md border-l-[3px] px-3 py-2 text-[14px] leading-snug ${cls}`, t)));
   return list;
 }
+function subheading(text) { return el("h4", "text-sm font-semibold text-blue", text); }
 
-function subheading(text) {
-  return el("h4", "text-sm font-semibold text-blue", text);
+/** Secondary action button inside a report section (e.g. "Edit in SPF builder"). */
+function actionButton(label, onClick) {
+  const b = el("button", "rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", label);
+  b.type = "button";
+  b.addEventListener("click", onClick);
+  return b;
 }
 
-/**
- * A report section: title, status pill and a one-line verdict, then a body.
- * id is used by the health rail to jump here.
- */
 function section(id, title, status, verdict) {
-  const wrap = el("section", "scroll-mt-6 p-6 sm:p-8");
+  const wrap = el("section", "min-w-0 scroll-mt-6 p-6 sm:p-8");
   wrap.id = id;
   const head = el("div", "mb-5 flex items-start justify-between gap-4");
-  add(head, add(el("div"),
+  add(head, add(el("div", "min-w-0"),
                 el("h3", "semi-wide text-lg font-bold text-navy", title),
                 verdict ? el("p", "mt-0.5 text-[15px] text-ink/70", verdict) : null),
             pill(status));
@@ -233,40 +428,42 @@ function section(id, title, status, verdict) {
   add(wrap, head, body);
   return { wrap, body };
 }
-
-/** Put sections side by side on wide screens, separated by a rule. */
 function pairRow(...sections) {
   return add(el("div", "grid border-t border-rule lg:grid-cols-2 lg:divide-x lg:divide-rule max-lg:[&>*+*]:border-t max-lg:[&>*+*]:border-rule"), sections);
 }
-function fullRow(sectionEl) {
-  return add(el("div", "border-t border-rule"), sectionEl);
-}
+function fullRow(sectionEl) { return add(el("div", "border-t border-rule"), sectionEl); }
 
 /* =====================================================================
-   One-line verdicts (what a busy admin wants to know first)
+   One-line verdicts
    ===================================================================== */
 function verdictDNS(dns) {
-  const recs = dns.records || {};
-  const total = Object.values(recs).reduce((n, r) => n + (r.records?.length || 0), 0);
+  const total = Object.values(dns.records || {}).reduce((n, r) => n + (r.records?.length || 0), 0);
   if (dns.status === "fail") return dns.errors?.[0] || "The domain doesn't resolve.";
   return `${total} record${total === 1 ? "" : "s"} found`;
 }
 function verdictSPF(spf) {
   if (!spf.found) return "No SPF record";
-  if (spf.lookup_count > spf.lookup_limit) return `${spf.lookup_count} lookups — over the limit of ${spf.lookup_limit}`;
+  if (spf.lookup_count > spf.lookup_limit) return `${spf.lookup_count} lookups, over the limit of ${spf.lookup_limit}`;
   return `${spf.lookup_count} of ${spf.lookup_limit} lookups used, ends in ${spf.all_qualifier ? spf.all_qualifier + "all" : "no all"}`;
+}
+function verdictDKIM(k) {
+  if (k.wildcard) return "Wildcard record, check your selector";
+  const n = k.selectors?.length || 0;
+  if (!n) return "No key at common selectors";
+  return `${n} key${n === 1 ? "" : "s"} found (${k.selectors.map((s) => s.selector).join(", ")})`;
 }
 function verdictDMARC(d) {
   if (!d.found) return "No DMARC record";
   if (!d.policy) return "Record has no valid policy";
-  return { none: "Monitoring only (p=none)", quarantine: "Suspicious mail goes to spam (p=quarantine)", reject: "Spoofed mail is rejected (p=reject)" }[d.policy];
+  return { none: "Monitoring only (p=none)", quarantine: "Failing mail goes to spam (p=quarantine)", reject: "Spoofed mail is rejected (p=reject)" }[d.policy];
 }
-function verdictMail(m) {
+function verdictMail(m, providers) {
   if (m.null_mx) return "Domain declares it accepts no mail";
   if (!m.mx?.length) return "Can't receive email";
   if (m.implicit_mx) return "No MX record, falls back to the website address";
   const n = m.mx.length;
-  return `${n} mail server${n === 1 ? "" : "s"}`;
+  const who = providers?.inbound?.length ? `${listFormat(providers.inbound)}, ` : "";
+  return `${who}${n} mail server${n === 1 ? "" : "s"}`;
 }
 function verdictTLS(t) {
   if (!t.not_after) return t.errors?.[0] || "No certificate could be read";
@@ -276,29 +473,32 @@ function verdictTLS(t) {
 }
 
 /* =====================================================================
-   HERO: domain, hosting answer, health rail
+   HERO: domain, hosting + email answer, health rail
    ===================================================================== */
 const RAIL = [
   ["DNS",   "sec-dns",   (d) => d.dns?.status,   (d) => verdictDNS(d.dns)],
   ["SPF",   "sec-spf",   (d) => d.spf?.status,   (d) => verdictSPF(d.spf)],
+  ["DKIM",  "sec-dkim",  (d) => d.dkim?.status,  (d) => verdictDKIM(d.dkim)],
   ["DMARC", "sec-dmarc", (d) => d.dmarc?.status, (d) => verdictDMARC(d.dmarc)],
-  ["Mail",  "sec-mail",  (d) => d.mail?.status,  (d) => verdictMail(d.mail)],
+  ["Mail",  "sec-mail",  (d) => d.mail?.status,  (d) => verdictMail(d.mail, d.providers)],
   ["SSL",   "sec-tls",   (d) => d.tls?.status,   (d) => verdictTLS(d.tls)],
 ];
 
 function renderRail(data, pending = false) {
-  const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-4 sm:grid-cols-5");
+  const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3 lg:grid-cols-6");
   rail.setAttribute("aria-label", "Results summary");
   RAIL.forEach(([name, target, statusOf, verdictOf]) => {
     const status = pending ? "pending" : statusOf(data) || "error";
-    const verdict = pending ? "Checking…" : (() => { try { return verdictOf(data); } catch { return st(status).word; } })();
-    const a = el("a", "group block rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
+    let verdict = "Checking…";
+    if (!pending) { try { verdict = verdictOf(data); } catch { verdict = st(status).word; } }
+    const a = el("a", "group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
     a.href = `#${target}`;
+    a.addEventListener("click", (e) => { e.preventDefault(); $(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
     add(a,
       add(el("div", "h-1.5 overflow-hidden rounded-full bg-rule"), el("div", `rail-bar h-full ${st(status).bar}`)),
       add(el("div", "mt-2 flex items-center gap-2"),
           el("span", "font-bold text-navy group-hover:text-blue", name),
-          el("span", `text-xs font-semibold ${pending ? "text-ink/50" : st(status).pill.split(" ").find((c) => c.startsWith("text-"))}`, st(status).word)),
+          el("span", `text-xs font-semibold ${st(status).text}`, st(status).word)),
       el("div", "mt-0.5 text-[13px] leading-snug text-ink/70", verdict));
     add(rail, a);
   });
@@ -307,25 +507,19 @@ function renderRail(data, pending = false) {
 
 function renderHosting(h) {
   const box = el("div", "mt-4");
-  if (!h || h.status === "error") {
-    add(box, el("p", "text-lg text-ink/70", "Hosting details couldn't be looked up."));
-    return box;
-  }
+  if (!h || h.status === "error") return add(box, el("p", "text-lg text-ink/70", "Hosting details couldn't be looked up."));
   add(box,
     el("p", "semi-wide break-anywhere text-xl font-bold text-navy sm:text-2xl", h.headline),
     el("p", "mt-1 max-w-3xl text-[15px] leading-relaxed text-ink/75", h.detail));
-
   if (h.ips?.length) {
     const list = el("ul", "mt-4 space-y-1.5");
     h.ips.forEach((i) => {
       const o = i.owner || {};
-      const li = el("li", "flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px]");
-      add(li,
+      add(list, add(el("li", "flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px]"),
         el("span", "font-mono font-semibold text-navy", i.ip),
-        el("span", "font-mono text-ink/70", i.ptr?.length ? i.ptr[0] : "no PTR record"),
+        el("span", "break-anywhere font-mono text-ink/70", i.ptr?.length ? i.ptr[0] : "no PTR record"),
         i.ptr?.length ? el("span", `text-xs font-semibold ${i.forward_confirmed ? "text-pass" : "text-warn"}`, i.forward_confirmed ? "PTR confirmed" : "PTR not confirmed") : null,
-        o.asn ? el("span", "text-ink/60", `${o.provider || o.as_name} (AS${o.asn})${o.country ? ", " + o.country : ""}`) : null);
-      add(list, li);
+        o.asn ? el("span", "text-ink/60", `${o.provider || o.as_name} (AS${o.asn})${o.country ? ", " + o.country : ""}`) : null));
     });
     add(box, list);
   }
@@ -334,31 +528,39 @@ function renderHosting(h) {
   return box;
 }
 
+function emailLine(data) {
+  const p = data.providers || {}, m = data.mail || {};
+  let text;
+  if (m.null_mx) text = "This domain declares that it doesn’t receive email.";
+  else if (!m.mx?.length) text = "This domain can’t receive email: it has no mail servers.";
+  else if (p.inbound?.length) text = `Email is handled by ${listFormat(p.inbound)}.`;
+  else text = "Email is handled by its own mail servers.";
+  if (p.senders?.length) text += ` It also sends through ${listFormat(p.senders)}.`;
+  return el("p", "mt-4 max-w-3xl border-t border-rule pt-4 text-[15px] text-navy", text);
+}
+
+function relativeChecked(data) {
+  if (data.sample) return "Sample data";
+  const at = new Date(data.checked_at);
+  const ageMin = Math.round((Date.now() - at.getTime()) / 60000);
+  const when = ageMin >= 1 ? `${ageMin} minute${ageMin === 1 ? "" : "s"} ago` : "just now";
+  return `Checked ${when}, in ${(data.duration_ms / 1000).toFixed(1)} s`;
+}
+
 function renderHero(data, { pending = false } = {}) {
   const hero = $("hero");
   hero.replaceChildren();
   add(hero, el("h2", "display break-anywhere text-4xl font-extrabold leading-[1.05] text-navy sm:text-6xl", data.domain));
-
-  if (pending) {
-    add(hero, el("p", "mt-4 text-lg text-ink/60", "Looking up DNS, hosting, mail and certificate details…"));
-  } else {
-    add(hero, renderHosting(data.hosting));
-  }
-
+  if (pending) add(hero, el("p", "mt-4 text-lg text-ink/60", "Looking up DNS, hosting, mail and certificate details…"));
+  else add(hero, renderHosting(data.hosting), emailLine(data));
   const rail = renderRail(data, pending);
   add(hero, rail);
-  // Two frames later, add the class that grows the bars (lets the browser paint them at 0 first).
   requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
-
-  if (!pending) {
-    const meta = data.sample ? "Sample data"
-      : `Checked in ${(data.duration_ms / 1000).toFixed(1)} s${data.cached ? " (cached from the last 5 minutes)" : ""}`;
-    add(hero, el("p", "mt-6 text-xs text-ink/50", meta));
-  }
+  if (!pending) add(hero, el("p", "mt-6 text-xs text-ink/50", relativeChecked(data)));
 }
 
 /* =====================================================================
-   SECTIONS
+   REPORT SECTIONS
    ===================================================================== */
 function recordText(type, r) {
   if (typeof r === "string") return r;
@@ -366,6 +568,7 @@ function recordText(type, r) {
     case "MX":  return `${r.preference}  ${r.exchange}`;
     case "SOA": return `${r.mname}  ${r.rname}  serial ${r.serial}  refresh ${r.refresh}  retry ${r.retry}  expire ${r.expire}  min ${r.minimum}`;
     case "SRV": return `${r.name}  ${r.priority} ${r.weight} ${r.port} ${r.target}`;
+    case "CAA": return `${r.flags} ${r.tag} "${r.value}"`;
     default:    return JSON.stringify(r);
   }
 }
@@ -379,15 +582,15 @@ function renderDNS(dns) {
     add(r, el("dt", "pt-px font-mono text-[13px] font-semibold text-blue", type));
     const dd = el("dd", "min-w-0 space-y-1");
     if (info.error) add(dd, el("div", "text-fail", info.error));
-    else if (!info.records.length) add(dd, el("div", "text-ink/40", "None"));
-    info.records.forEach((rec) => add(dd, el("div", "break-anywhere font-mono text-[13px] leading-relaxed text-ink", recordText(type, rec))));
+    else if (!info.records?.length) add(dd, el("div", "text-ink/40", "None"));
+    (info.records || []).forEach((rec) => add(dd, el("div", "break-anywhere font-mono text-[13px] leading-relaxed text-ink", recordText(type, rec))));
     add(table, add(r, dd));
   });
   add(body, table);
   return wrap;
 }
 
-function renderSPF(spf) {
+function renderSPF(spf, domain) {
   const { wrap, body } = section("sec-spf", "SPF", spf.status, verdictSPF(spf));
   if (spf.record) add(body, recordBlock(spf.record));
   if (spf.found) {
@@ -399,7 +602,7 @@ function renderSPF(spf) {
       add(el("div"),
         add(el("div", "mb-1.5 flex justify-between text-[13px]"),
             el("span", "text-ink/60", "DNS lookups"),
-            el("span", "font-semibold text-navy", `${spf.lookup_count} of ${spf.lookup_limit}`)),
+            el("span", "tabular font-semibold text-navy", `${spf.lookup_count} of ${spf.lookup_limit}`)),
         add(el("div", "h-2 overflow-hidden rounded-full bg-canvas"), bar)),
       add(el("div"),
         row("Ends with", spf.all_qualifier ? `${spf.all_qualifier}all` : "No all mechanism", true),
@@ -415,49 +618,97 @@ function renderSPF(spf) {
     }
   }
   add(body, findings(spf));
+  add(body, actionButton(spf.found ? "Edit in SPF builder" : "Create an SPF record", () => openSpfBuilder(domain, spf.record)));
   return wrap;
 }
 
-function renderDMARC(d) {
+function renderDMARC(d, domain) {
   const { wrap, body } = section("sec-dmarc", "DMARC", d.status, verdictDMARC(d));
   if (d.record) add(body, recordBlock(d.record));
   if (d.found) {
     add(body, add(el("div"),
       row("Policy", d.policy || "Invalid", true),
-      row("Subdomain policy", d.subdomain_policy || `Same as policy`),
+      row("Subdomain policy", d.subdomain_policy || "Same as policy"),
       row("Applies to", `${d.pct}% of failing mail`),
       row("Alignment", `DKIM ${d.adkim === "s" ? "strict" : "relaxed"}, SPF ${d.aspf === "s" ? "strict" : "relaxed"}`),
-      row("Aggregate reports", d.rua.join(", ") || "Not set", true),
-      row("Forensic reports", d.ruf.join(", ") || "Not set", true)));
+      row("Summary reports", d.rua.join(", ") || "Not set", true),
+      row("Failure reports", d.ruf.join(", ") || "Not set", true)));
   }
   add(body, findings(d));
+  add(body, actionButton(d.found ? "Edit in DMARC builder" : "Create a DMARC record", () => openDmarcBuilder(domain, d.record)));
   return wrap;
 }
 
-function renderMail(mail) {
-  const { wrap, body } = section("sec-mail", "Mail servers", mail.status, verdictMail(mail));
+function dkimKeyLine(k) {
+  const v = add(el("div", "flex flex-wrap items-center gap-x-3 gap-y-1"),
+    el("span", "text-ink", k.revoked ? "Revoked key" : k.key_type === "ed25519" ? "Ed25519" : k.bits ? `RSA ${k.bits}-bit` : "Unreadable key"),
+    pill(k.status));
+  return v;
+}
+
+function renderDKIM(k, domain) {
+  const { wrap, body } = section("sec-dkim", "DKIM", k.status, verdictDKIM(k));
+  add(body, findings(k));
+  if (k.selectors?.length) {
+    const list = el("div");
+    k.selectors.forEach((s) => add(list, row(s.selector, dkimKeyLine(s), false)));
+    add(body, list);
+    const notes = k.selectors.filter((s) => s.status !== "pass").map((s) => `${s.selector}: ${s.note}`);
+    if (notes.length) add(body, findings({ notes }));
+  }
+
+  // Check a specific selector (the s= value from an email's DKIM-Signature header)
+  const form = el("form", "flex flex-col gap-2 sm:flex-row");
+  form.autocomplete = "off";
+  const label = el("label", "sr-only", "Selector to check");
+  label.htmlFor = "dkim-selector";
+  const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
+  Object.assign(input, { id: "dkim-selector", type: "text", placeholder: "selector, e.g. selector1", spellcheck: false, required: true, maxLength: 63 });
+  const btn = el("button", "rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check selector");
+  btn.type = "submit";
+  const out = el("div", "text-[14px]");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const sel = input.value.trim();
+    if (!sel) return;
+    out.replaceChildren(el("p", "text-ink/60", `Looking up ${sel}._domainkey.${domain}…`));
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/dkim?domain=${encodeURIComponent(domain)}&selector=${encodeURIComponent(sel)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Lookup failed (HTTP ${res.status}).`);
+      if (!data.found) out.replaceChildren(el("p", "text-warn", `No DKIM key at ${sel}._domainkey.${domain}.`));
+      else out.replaceChildren(row(data.key.selector, dkimKeyLine(data.key)), el("p", "mt-2 text-ink/70", data.key.note), recordBlock(data.key.record));
+    } catch (err) {
+      out.replaceChildren(el("p", "text-fail", err instanceof TypeError ? "Couldn't reach the DigDNS service." : err.message));
+    }
+  });
+  add(form, label, input, btn);
+  add(body,
+    subheading("Check a specific selector"),
+    el("p", "-mt-2 text-[13px] text-ink/70", "Open a sent email’s headers and find DKIM-Signature. The value after s= is the selector."),
+    form, out);
+  return wrap;
+}
+
+function renderMail(mail, providers) {
+  const { wrap, body } = section("sec-mail", "Mail servers", mail.status, verdictMail(mail, providers));
   add(body, findings(mail));
   if (mail.mx?.length) {
     const list = el("div");
     mail.mx.forEach((m) => {
-      const v = add(el("div"), el("div", "font-mono text-[13px] font-semibold text-navy", m.host),
-                    m.ips?.length ? el("div", "font-mono text-[12px] text-ink/60", m.ips.join(", ")) : el("div", "text-[12px] text-fail", "Doesn't resolve"));
+      const v = add(el("div"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", m.host),
+                    m.ips?.length ? el("div", "break-anywhere font-mono text-[12px] text-ink/60", m.ips.join(", ")) : el("div", "text-[12px] text-fail", "Doesn't resolve"));
       add(list, row(m.implicit ? "Fallback (A record)" : `Priority ${m.preference}`, v));
     });
     add(body, list);
   }
   if (mail.rdns?.length) {
     const list = el("div");
-    mail.rdns.forEach((r) => {
-      const v = add(el("div", "flex flex-wrap items-baseline gap-x-3"),
-        el("span", "font-mono text-[13px]", r.ptr.length ? r.ptr.join(", ") : "No PTR record"),
-        el("span", `text-xs font-semibold ${r.forward_confirmed ? "text-pass" : "text-fail"}`, r.forward_confirmed ? "Confirmed" : "Not confirmed"));
-      add(list, row(r.ip, v));
-    });
+    mail.rdns.forEach((r) => add(list, row(r.ip, add(el("div", "flex flex-wrap items-baseline gap-x-3"),
+      el("span", "break-anywhere font-mono text-[13px]", r.ptr.length ? r.ptr.join(", ") : "No PTR record"),
+      el("span", `text-xs font-semibold ${r.forward_confirmed ? "text-pass" : "text-fail"}`, r.forward_confirmed ? "Confirmed" : "Not confirmed")))));
     add(body, subheading("Reverse DNS of mail servers"), list);
   }
-
-  // SMTP handshake result lives with the mail servers it tested.
   const smtp = mail.smtp;
   if (smtp?.disabled) {
     add(body, el("p", "rounded-lg bg-canvas px-3 py-2.5 text-[13px] text-ink/70",
@@ -466,9 +717,7 @@ function renderMail(mail) {
     add(body, subheading("SMTP handshake (port 25)"));
     const log = el("ol", "space-y-1.5");
     (smtp.steps || []).forEach((s) => add(log, add(el("li", "rounded-md bg-canvas px-3 py-2"),
-      add(el("div", "flex justify-between gap-2 font-mono text-[12px]"),
-          el("span", "break-anywhere text-navy", s.step),
-          el("span", `font-bold ${s.ok ? "text-pass" : "text-fail"}`, s.code)),
+      add(el("div", "flex justify-between gap-2 font-mono text-[12px]"), el("span", "break-anywhere text-navy", s.step), el("span", `font-bold ${s.ok ? "text-pass" : "text-fail"}`, s.code)),
       el("div", "mt-0.5 break-anywhere font-mono text-[12px] text-ink/60", s.message))));
     add(body, log);
     if (smtp.verdict) add(body, el("p", "text-[14px] font-semibold text-navy", smtp.verdict));
@@ -477,28 +726,51 @@ function renderMail(mail) {
   return wrap;
 }
 
+function caaBlock(caa) {
+  const box = el("div", "space-y-2");
+  add(box, subheading("Who may issue certificates (CAA)"));
+  if (!caa || caa.status === "error" || caa.error) return add(box, el("p", "text-ink/60", "CAA records couldn't be looked up."));
+  if (!caa.found) return add(box, el("p", "text-ink/70", "Any certificate authority. There’s no CAA record to restrict it."));
+  const chips = el("div", "flex flex-wrap gap-1.5");
+  caa.issuers.forEach((i) => add(chips, el("span", "rounded-md bg-canvas px-2 py-0.5 font-mono text-[12px] text-navy", i === "(none)" ? "no CA allowed" : i)));
+  add(box, chips);
+  if (caa.wildcard_issuers?.length) {
+    const w = caa.wildcard_issuers.includes("(none)") ? "No CA may issue wildcard certificates." : `Wildcard certificates: ${caa.wildcard_issuers.join(", ")}.`;
+    add(box, el("p", "text-[13px] text-ink/70", w));
+  }
+  if (caa.found_at) add(box, el("p", "text-[13px] text-ink/60", `Set at ${caa.found_at}${caa.iodef?.length ? `, problems reported to ${caa.iodef.join(", ")}` : ""}.`));
+  return box;
+}
+
 function renderTLS(t) {
   const { wrap, body } = section("sec-tls", "SSL certificate", t.status, verdictTLS(t));
   add(body, findings(t));
+  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const left = el("div", "min-w-0");
   if (t.not_after) {
-    add(body, add(el("div"),
+    add(left,
       row("Trusted", t.verified ? "Yes, chain and hostname are valid" : `No: ${t.verify_error}`),
       row("Issued to", t.subject_cn, true),
       row("Issued by", [t.issuer_org, t.issuer_cn].filter(Boolean).join(", ") || t.issuer),
       row("Valid from", new Date(t.not_before).toUTCString()),
       row("Expires", new Date(t.not_after).toUTCString()),
       row("Connection", `${t.tls_version}, ${t.cipher}`, true),
-      row("Tested on", `${t.ip}:443`, true)));
-    if (t.sans?.length) {
-      const chips = el("div", "flex flex-wrap gap-1.5");
-      t.sans.forEach((s) => add(chips, el("span", "rounded-md bg-canvas px-2 py-0.5 font-mono text-[12px] text-navy", s)));
-      add(body, subheading(`Names this certificate covers (${t.sans.length})`), chips);
-    }
+      row("Tested on", `${t.ip}:443`, true));
   }
+  const right = el("div", "min-w-0 space-y-6");
+  if (t.sans?.length) {
+    const chips = el("div", "flex flex-wrap gap-1.5");
+    t.sans.forEach((s) => add(chips, el("span", "break-anywhere rounded-md bg-canvas px-2 py-0.5 font-mono text-[12px] text-navy", s)));
+    add(right, add(el("div", "space-y-2"), subheading(`Names this certificate covers (${t.sans.length})`), chips));
+  }
+  add(right, caaBlock(t.caa));
+  add(body, add(grid, left, right));
   return wrap;
 }
 
+let currentReport = null;
 function renderReport(data) {
+  currentReport = data;
   $("intro").classList.add("hidden");
   $("try-row").classList.add("hidden");
   $("sample-banner").classList.toggle("hidden", !data.sample);
@@ -508,8 +780,249 @@ function renderReport(data) {
   s.replaceChildren();
   add(s,
     fullRow(renderDNS(data.dns)),
-    pairRow(renderSPF(data.spf), renderDMARC(data.dmarc)),
-    pairRow(renderMail(data.mail), renderTLS(data.tls)));
+    pairRow(renderSPF(data.spf, data.domain), renderDMARC(data.dmarc, data.domain)),
+    pairRow(renderDKIM(data.dkim || {}, data.domain), renderMail(data.mail, data.providers)),
+    fullRow(renderTLS(data.tls)));
+}
+
+/* =====================================================================
+   SPF BUILDER
+   ===================================================================== */
+const SPF_PROVIDERS = [
+  ["Google Workspace", "_spf.google.com"], ["Microsoft 365", "spf.protection.outlook.com"],
+  ["Zoho Mail", "zoho.com"], ["Zoho Mail (India)", "zoho.in"],
+  ["Proton Mail", "_spf.protonmail.ch"], ["Fastmail", "spf.messagingengine.com"],
+  ["iCloud Mail", "icloud.com"], ["Amazon SES", "amazonses.com"],
+  ["SendGrid", "sendgrid.net"], ["Mailgun", "mailgun.org"],
+  ["Mailchimp", "servers.mcsv.net"], ["Brevo", "spf.brevo.com"],
+  ["Postmark", "spf.mtasv.net"], ["Mailjet", "spf.mailjet.com"],
+  ["Zendesk", "mail.zendesk.com"], ["Salesforce", "_spf.salesforce.com"],
+];
+
+function buildProviderChoices() {
+  const box = $("spf-providers");
+  SPF_PROVIDERS.forEach(([name, inc], i) => {
+    const label = el("label", "choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3");
+    const cb = el("input", "mt-1 accent-[#1679A8]");
+    Object.assign(cb, { type: "checkbox", id: `spf-prov-${i}`, value: inc });
+    cb.dataset.include = inc;
+    add(label, cb, add(el("span", "min-w-0"), el("span", "block font-semibold text-navy", name), el("span", "block break-anywhere font-mono text-xs text-ink/60", `include:${inc}`)));
+    add(box, label);
+  });
+}
+
+const IPV4_CIDR = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}(\/(3[0-2]|[12]?\d))?$/;
+const IPV6_CIDR = /^[0-9a-f:]*:[0-9a-f:.]*(\/(12[0-8]|1[01]\d|[1-9]?\d))?$/i;
+
+function spfFromForm() {
+  const parts = ["v=spf1"];
+  if ($("spf-a").checked) parts.push("a");
+  if ($("spf-mx").checked) parts.push("mx");
+  const bad = [];
+  $("spf-ips").value.split(/[\s,]+/).filter(Boolean).forEach((ip) => {
+    const clean = ip.replace(/^ip[46]:/i, "");
+    if (IPV4_CIDR.test(clean)) parts.push(`ip4:${clean}`);
+    else if (IPV6_CIDR.test(clean)) parts.push(`ip6:${clean}`);
+    else bad.push(ip);
+  });
+  document.querySelectorAll("#spf-providers input:checked").forEach((cb) => parts.push(`include:${cb.dataset.include}`));
+  $("spf-other").value.split(/\s+/).filter(Boolean).forEach((t) => {
+    const term = /^[+\-~?]?(include|a|mx|ptr|exists|ip4|ip6|redirect|exp)\b/i.test(t) ? t : `include:${t}`;
+    if (!parts.includes(term)) parts.push(term);
+  });
+  parts.push(`${document.querySelector('input[name="spf-all"]:checked').value}all`);
+  return { record: parts.join(" "), bad };
+}
+
+function dnsRows(target, rows) {
+  target.replaceChildren();
+  rows.forEach(([k, v]) => add(target, el("dt", "text-white/60", k), el("dd", "min-w-0 break-anywhere font-mono", v)));
+}
+
+function builderFindings(target, items) {
+  target.replaceChildren();
+  items.forEach(([kind, text]) => {
+    const color = kind === "error" ? "border-[#FF8A80]" : kind === "warn" ? "border-orange" : "border-sky";
+    add(target, el("li", `rounded-r-md border-l-[3px] ${color} bg-white/5 px-3 py-2 leading-snug`, text));
+  });
+}
+
+let spfTimer = null, spfSeq = 0;
+function updateSpf() {
+  const { record, bad } = spfFromForm();
+  $("spf-output").textContent = record;
+  const domain = $("spf-domain").value.trim();
+  dnsRows($("spf-dns"), [["Type", "TXT"], ["Name", domain ? `@ (${domain})` : "@"], ["Value", record]]);
+  $("spf-ips-error").classList.toggle("hidden", !bad.length);
+  $("spf-ips-error").textContent = bad.length ? `Not a valid IP or range: ${bad.join(", ")}` : "";
+
+  // Count lookups with the real engine (debounced so typing doesn't spam the API).
+  // Only while the builder is on screen; showView() calls this again when it opens.
+  clearTimeout(spfTimer);
+  const seq = ++spfSeq;
+  if ($("view-spf").hidden) return;
+  $("spf-count").textContent = "Counting…";
+  spfTimer = setTimeout(async () => {
+    try {
+      const url = `${API_BASE}/api/v1/spf/evaluate?record=${encodeURIComponent(record)}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`;
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+      if (seq !== spfSeq) return; // a newer edit is already being counted
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn't count lookups.");
+      const n = data.lookup_count, limit = data.lookup_limit;
+      $("spf-count").textContent = `${n} of ${limit}`;
+      const meter = $("spf-meter");
+      meter.style.width = `${Math.min(100, (n / limit) * 100)}%`;
+      meter.className = `h-full rounded-full transition-[width] duration-300 ${n > limit ? "bg-[#FF8A80]" : n >= 8 ? "bg-orange" : "bg-sky"}`;
+      builderFindings($("spf-findings"), [
+        ...data.errors.map((t) => ["error", t]), ...data.warnings.map((t) => ["warn", t]), ...(data.notes || []).map((t) => ["note", t]),
+      ]);
+    } catch (err) {
+      if (seq !== spfSeq) return;
+      $("spf-count").textContent = "—";
+      builderFindings($("spf-findings"), [["note", err instanceof TypeError ? "Lookup count unavailable right now. The record text is still valid to copy." : err.message]]);
+    }
+  }, 600);
+}
+
+/** Load an existing record into the form ("Edit in SPF builder"). */
+function loadSpf(domain, record) {
+  $("spf-domain").value = domain || "";
+  $("spf-a").checked = false; $("spf-mx").checked = false;
+  document.querySelectorAll("#spf-providers input").forEach((cb) => (cb.checked = false));
+  const ips = [], other = [];
+  let all = "~";
+  (record || "").split(/\s+/).slice(1).forEach((term) => {
+    const m = term.match(/^([+\-~?]?)all$/i);
+    if (m) { all = m[1] || "+"; return; }
+    if (/^\+?a$/i.test(term)) { $("spf-a").checked = true; return; }
+    if (/^\+?mx$/i.test(term)) { $("spf-mx").checked = true; return; }
+    const ip = term.match(/^\+?ip[46]:(.+)$/i);
+    if (ip) { ips.push(ip[1]); return; }
+    const inc = term.match(/^\+?include:(.+)$/i);
+    const cb = inc && document.querySelector(`#spf-providers input[data-include="${CSS.escape(inc[1].toLowerCase())}"]`);
+    if (cb) { cb.checked = true; return; }
+    other.push(term);
+  });
+  $("spf-ips").value = ips.join("\n");
+  $("spf-other").value = other.join(" ");
+  const radio = document.querySelector(`input[name="spf-all"][value="${all === "+" ? "~" : all}"]`);
+  if (radio) radio.checked = true;
+  updateSpf();
+}
+
+/* =====================================================================
+   DMARC BUILDER
+   ===================================================================== */
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const splitEmails = (v) => v.split(/[\s,;]+/).map((x) => x.replace(/^mailto:/i, "")).filter(Boolean);
+
+function dmarcFromForm() {
+  const p = document.querySelector('input[name="dmarc-p"]:checked').value;
+  const tags = [`v=DMARC1`, `p=${p}`];
+  const sp = $("dmarc-sp").value;      if (sp) tags.push(`sp=${sp}`);
+  const pct = Number($("dmarc-pct").value);
+  if (p !== "none" && pct < 100) tags.push(`pct=${pct}`);
+  const rua = splitEmails($("dmarc-rua").value), ruf = splitEmails($("dmarc-ruf").value);
+  if (rua.length) tags.push(`rua=${rua.map((e) => "mailto:" + e).join(",")}`);
+  if (ruf.length) tags.push(`ruf=${ruf.map((e) => "mailto:" + e).join(",")}`);
+  if ($("dmarc-fo").value) tags.push(`fo=${$("dmarc-fo").value}`);
+  if ($("dmarc-adkim").value === "s") tags.push("adkim=s");
+  if ($("dmarc-aspf").value === "s") tags.push("aspf=s");
+  return { record: tags.join("; "), p, rua, ruf };
+}
+
+function updateDmarc() {
+  const { record, p, rua, ruf } = dmarcFromForm();
+  $("dmarc-pct-wrap").classList.toggle("hidden", p === "none");
+  $("dmarc-pct-value").textContent = $("dmarc-pct").value;
+  $("dmarc-output").textContent = record;
+  const domain = $("dmarc-domain").value.trim().toLowerCase();
+  dnsRows($("dmarc-dns"), [["Type", "TXT"], ["Name", domain ? `_dmarc (_dmarc.${domain})` : "_dmarc"], ["Value", record]]);
+
+  const notes = [];
+  [...rua, ...ruf].filter((e) => !EMAIL_RE.test(e)).forEach((e) => notes.push(["error", `“${e}” isn’t a valid email address.`]));
+  if (!rua.length) notes.push(["warn", "Without a summary report address you can’t see who sends mail as your domain. Add one before tightening the policy."]);
+  if (domain) {
+    const external = [...new Set([...rua, ...ruf].filter((e) => EMAIL_RE.test(e)).map((e) => e.split("@")[1].toLowerCase()))]
+      .filter((d) => d !== domain && !d.endsWith("." + domain) && !domain.endsWith("." + d));
+    external.forEach((d) => notes.push(["note", `Reports go to ${d}, so that domain must publish a TXT record “v=DMARC1” at ${domain}._report._dmarc.${d}. Report services usually do this for you.`]));
+  }
+  if (p === "reject" && $("dmarc-sp").value === "none") notes.push(["warn", "Subdomains are left unprotected while the main domain rejects. Attackers often spoof subdomains."]);
+  builderFindings($("dmarc-findings"), notes);
+
+  // Rollout steps (a real sequence, so numbered), with the current stage highlighted
+  const steps = [
+    ["none", "Monitor with p=none for 2 to 4 weeks. Read the summary reports and fix any legitimate sender that fails."],
+    ["quarantine", "Move to p=quarantine. Optionally start at a low percentage and raise it to 100."],
+    ["reject", "Move to p=reject once reports show only spoofed mail failing."],
+  ];
+  const ol = $("dmarc-steps");
+  ol.replaceChildren();
+  steps.forEach(([stage, text], i) => {
+    const active = stage === p;
+    add(ol, add(el("li", `flex gap-3 rounded-lg px-3 py-2 ${active ? "bg-white/10" : ""}`),
+      el("span", `tabular font-bold ${active ? "text-orange" : "text-white/50"}`, String(i + 1)),
+      el("span", active ? "text-white" : "text-white/60", text)));
+  });
+}
+
+function loadDmarc(domain, record) {
+  $("dmarc-domain").value = domain || "";
+  const tags = {};
+  (record || "").split(";").forEach((part) => {
+    const [k, ...v] = part.split("=");
+    if (k && v.length) tags[k.trim().toLowerCase()] = v.join("=").trim();
+  });
+  const p = ["none", "quarantine", "reject"].includes((tags.p || "").toLowerCase()) ? tags.p.toLowerCase() : "none";
+  document.querySelector(`input[name="dmarc-p"][value="${p}"]`).checked = true;
+  $("dmarc-sp").value = ["none", "quarantine", "reject"].includes((tags.sp || "").toLowerCase()) ? tags.sp.toLowerCase() : "";
+  $("dmarc-pct").value = Math.max(5, Math.min(100, parseInt(tags.pct, 10) || 100));
+  const emails = (v) => (v || "").split(",").map((x) => x.trim().replace(/^mailto:/i, "").split("!")[0]).filter(Boolean).join(", ");
+  $("dmarc-rua").value = emails(tags.rua);
+  $("dmarc-ruf").value = emails(tags.ruf);
+  $("dmarc-fo").value = (tags.fo || "").trim() === "1" ? "1" : "";
+  $("dmarc-adkim").value = (tags.adkim || "").toLowerCase() === "s" ? "s" : "r";
+  $("dmarc-aspf").value = (tags.aspf || "").toLowerCase() === "s" ? "s" : "r";
+  updateDmarc();
+}
+
+/* =====================================================================
+   VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
+   ===================================================================== */
+const VIEWS = { report: "", spf: "#spf-builder", dmarc: "#dmarc-builder" };
+function showView(name) {
+  ["report", "spf", "dmarc"].forEach((v) => {
+    $(`view-${v}`).hidden = v !== name;
+    $(`head-${v}`).hidden = v !== name;
+  });
+  document.querySelectorAll(".tab").forEach((t) => {
+    const on = t.dataset.nav === name;
+    t.classList.toggle("text-white", on); t.classList.toggle("border-orange", on);
+    t.classList.toggle("text-white/70", !on); t.classList.toggle("border-transparent", !on);
+    if (on) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
+  });
+  if (name === "spf") updateSpf();
+}
+function viewFromHash() {
+  return location.hash === VIEWS.spf ? "spf" : location.hash === VIEWS.dmarc ? "dmarc" : "report";
+}
+window.addEventListener("hashchange", () => { showView(viewFromHash()); window.scrollTo(0, 0); });
+document.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click", (e) => {
+  e.preventDefault();
+  const name = a.dataset.nav;
+  history.pushState(null, "", VIEWS[name] || location.pathname + location.search);
+  showView(name);
+  window.scrollTo(0, 0);
+}));
+
+function openSpfBuilder(domain, record) {
+  loadSpf(domain, record || "v=spf1 ~all");
+  history.pushState(null, "", VIEWS.spf); showView("spf"); window.scrollTo(0, 0);
+}
+function openDmarcBuilder(domain, record) {
+  loadDmarc(domain, record || "v=DMARC1; p=none");
+  history.pushState(null, "", VIEWS.dmarc); showView("dmarc"); window.scrollTo(0, 0);
 }
 
 /* =====================================================================
@@ -525,40 +1038,49 @@ const SAMPLE = {
       { ip: "2001:db8:85a3::24", ptr: [], forward_confirmed: false, owner: { asn: 64500, as_name: "HOSTCO-AS", country: "IN" } },
     ], errors: [], warnings: [], notes: [],
   },
+  providers: { inbound: ["Google Workspace"], senders: ["SendGrid"] },
   dns: { status: "pass", errors: [], warnings: [], records: {
     A: { records: ["203.0.113.24"] }, AAAA: { records: ["2001:db8:85a3::24"] },
-    MX: { records: [{ preference: 10, exchange: "mx1.northwind.example" }, { preference: 20, exchange: "mx2.northwind.example" }] },
-    TXT: { records: ["v=spf1 ip4:203.0.113.0/24 include:_spf.mailhost.example ~all", "site-verification=Yp3kQ81vZ"] },
+    MX: { records: [{ preference: 1, exchange: "aspmx.l.google.com" }, { preference: 5, exchange: "alt1.aspmx.l.google.com" }] },
+    TXT: { records: ["v=spf1 include:_spf.google.com include:sendgrid.net ~all", "site-verification=Yp3kQ81vZ"] },
     CNAME: { records: [] }, NS: { records: ["ns1.dnshost.example", "ns2.dnshost.example"] },
     SOA: { records: [{ mname: "ns1.dnshost.example", rname: "hostmaster.northwind.example", serial: 2026110401, refresh: 7200, retry: 3600, expire: 1209600, minimum: 3600 }] },
+    CAA: { records: [{ flags: 0, tag: "issue", value: "letsencrypt.org" }, { flags: 0, tag: "iodef", value: "mailto:security@northwind.example" }] },
     SRV: { records: [{ name: "_autodiscover._tcp.northwind.example", priority: 0, weight: 0, port: 443, target: "mail.northwind.example" }] },
   } },
-  spf: { status: "warn", found: true, record: "v=spf1 ip4:203.0.113.0/24 include:_spf.mailhost.example ~all",
-    lookup_count: 8, lookup_limit: 10, void_lookups: 0, all_qualifier: "~",
-    includes: [{ via: "include", domain: "_spf.mailhost.example", depth: 1, record: "v=spf1 …" },
-               { via: "include", domain: "_netblocks.mailhost.example", depth: 2, record: "v=spf1 …" }],
-    errors: [], warnings: ["8/10 DNS lookups — one more vendor include could break SPF."] },
+  spf: { status: "pass", found: true, record: "v=spf1 include:_spf.google.com include:sendgrid.net ~all",
+    lookup_count: 5, lookup_limit: 10, void_lookups: 0, all_qualifier: "~",
+    includes: [{ via: "include", domain: "_spf.google.com", depth: 1, record: "v=spf1 …" },
+               { via: "include", domain: "_netblocks.google.com", depth: 2, record: "v=spf1 …" },
+               { via: "include", domain: "_netblocks2.google.com", depth: 2, record: "v=spf1 …" },
+               { via: "include", domain: "_netblocks3.google.com", depth: 2, record: "v=spf1 …" },
+               { via: "include", domain: "sendgrid.net", depth: 1, record: "v=spf1 …" }],
+    errors: [], warnings: [] },
+  dkim: { status: "warn", wildcard: false, checked: 30, errors: [], warnings: [], notes: [], selectors: [
+    { selector: "google", key_type: "rsa", bits: 2048, revoked: false, status: "pass", note: "2048-bit RSA key." },
+    { selector: "s1", key_type: "rsa", bits: 1024, revoked: false, status: "warn", note: "1024-bit RSA key works, but 2048-bit is the current recommendation." },
+  ] },
   dmarc: { status: "warn", found: true, record: "v=DMARC1; p=none; rua=mailto:dmarc@northwind.example",
     policy: "none", subdomain_policy: null, pct: 100, adkim: "r", aspf: "r", rua: ["dmarc@northwind.example"], ruf: [],
     errors: [], warnings: ["p=none is monitor-only: spoofed mail is still delivered. Move to quarantine, then reject, once reports look clean."] },
   mail: { status: "pass", null_mx: false, implicit_mx: false,
-    mx: [{ preference: 10, host: "mx1.northwind.example", ips: ["203.0.113.40"] }, { preference: 20, host: "mx2.northwind.example", ips: ["203.0.113.41"] }],
-    rdns: [{ ip: "203.0.113.40", ptr: ["mx1.northwind.example"], forward_confirmed: true }, { ip: "203.0.113.41", ptr: ["mx2.northwind.example"], forward_confirmed: true }],
-    smtp: { host: "mx1.northwind.example", skipped: true, disabled: true }, errors: [], warnings: [], notes: [] },
+    mx: [{ preference: 1, host: "aspmx.l.google.com", ips: ["142.250.141.26"] }, { preference: 5, host: "alt1.aspmx.l.google.com", ips: ["142.250.115.27"] }],
+    rdns: [{ ip: "142.250.141.26", ptr: ["mx-in-f26.1e100.net"], forward_confirmed: true }, { ip: "142.250.115.27", ptr: ["rq-in-f27.1e100.net"], forward_confirmed: true }],
+    smtp: { host: "aspmx.l.google.com", skipped: true, disabled: true }, errors: [], warnings: [], notes: [] },
   tls: { status: "pass", ip: "203.0.113.24", verified: true, subject_cn: "northwind.example", issuer_org: "Let's Encrypt", issuer_cn: "R11",
     not_before: "2026-09-12T00:00:00+00:00", not_after: "2026-12-11T00:00:00+00:00", days_remaining: 37,
-    sans: ["northwind.example", "www.northwind.example"], tls_version: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384", errors: [], warnings: [] },
+    sans: ["northwind.example", "www.northwind.example"], tls_version: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384", errors: [], warnings: [],
+    caa: { found: true, found_at: "northwind.example", issuers: ["letsencrypt.org"], wildcard_issuers: [], iodef: ["mailto:security@northwind.example"] } },
 };
 
 /* =====================================================================
-   UI state + main flow
+   Report flow
    ===================================================================== */
 function setLoading(on) {
   $("search-btn").disabled = on;
   $("spinner").classList.toggle("hidden", !on);
   $("btn-label").textContent = on ? "Checking…" : "Check domain";
 }
-
 function showError(message) {
   const box = $("error-box");
   box.textContent = message;
@@ -599,9 +1121,21 @@ function run(domain) {
   domain = domain.trim();
   if (!domain) return;
   $("domain-input").value = domain;
-  history.replaceState(null, "", `?domain=${encodeURIComponent(domain)}`); // shareable link
+  history.replaceState(null, "", `?domain=${encodeURIComponent(domain)}`);
+  showView("report");
   analyze(domain);
 }
+
+/* =====================================================================
+   Wire everything up
+   ===================================================================== */
+buildProviderChoices();
+$("spf-form").addEventListener("input", updateSpf);
+$("spf-form").addEventListener("submit", (e) => e.preventDefault());
+$("spf-copy").addEventListener("click", () => copyText($("spf-output").textContent, $("spf-copy"), $("spf-output")));
+$("dmarc-form").addEventListener("input", updateDmarc);
+$("dmarc-form").addEventListener("submit", (e) => e.preventDefault());
+$("dmarc-copy").addEventListener("click", () => copyText($("dmarc-output").textContent, $("dmarc-copy"), $("dmarc-output")));
 
 $("search-form").addEventListener("submit", (e) => { e.preventDefault(); run($("domain-input").value); });
 document.querySelectorAll("[data-try]").forEach((b) => b.addEventListener("click", () => run(b.dataset.try)));
@@ -611,9 +1145,14 @@ $("sample-btn").addEventListener("click", () => {
   renderReport(SAMPLE);
 });
 
-// Open straight into a report if the URL says so: ?domain=example.com or ?sample
+// Builders start with sensible defaults
+loadSpf("", "v=spf1 ~all");
+loadDmarc("", "v=DMARC1; p=none");
+
+// Initial view from the URL
+showView(viewFromHash());
 const params = new URLSearchParams(location.search);
-if (params.get("domain")) run(params.get("domain"));
+if (params.get("domain")) { $("domain-input").value = params.get("domain"); if (viewFromHash() === "report") analyze(params.get("domain")); }
 else if (params.has("sample") || window.DIGDNS_SAMPLE) renderReport(SAMPLE);
 </script>
 </body>
