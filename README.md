@@ -12,15 +12,17 @@ VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one r
 - **DMARC:** policy, reporting addresses and alignment.
 - **Mail:** MX servers, their reverse DNS, and the email provider in use.
 - **MTA-STS, TLS-RPT and BIMI:** records parsed, the MTA-STS policy fetched and checked against the MX hosts, and BIMI checked against the DMARC policy.
+- **Blocklists:** the website, MX and SPF sending IPs checked against SpamCop, Mailspike, PSBL, UCEPROTECT L1, SpamRATS and DroneBL; the domain against SURBL and URIBL. Each list is tested first (RFC 5782 test points), so a list that refuses or ignores the lookup shows "Couldn't check" instead of a false "Listed".
 - **SSL:** issuer, expiry, covered names, and the CAA records that say which authorities may issue.
 
 The report opens with a **What needs attention** list of every problem, worst first, and can be copied as plain text for tickets or email.
 
-Plus three tools:
+Plus four tools:
 
 - **Propagation:** compares 8 public resolvers with the authoritative nameserver.
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
+- **Header analyzer:** paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
 
 Live at **https://dig.sujaiprojects.stream**
 
@@ -51,7 +53,7 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
 
 ### Design decisions
 
-- **Everything runs in parallel.** The report's nine checks start together with `asyncio.gather`, so a report takes about as long as the slowest check (usually 1–3 s).
+- **Everything runs in parallel.** The report's twelve checks start together with `asyncio.gather`, so a report takes about as long as the slowest check (usually 1–3 s).
 - **Every check has its own deadline.** If one part times out, the rest of the report still returns and that section shows "Error".
 - **"No record" is kept separate from "lookup failed".** A flaky resolver never shows up as a false "No SPF record".
 - **SSRF protection.** The API never connects to private, loopback or reserved IPs. The website check follows redirects itself and re-checks every hop's address, so a redirect can't lead it into an internal network.
@@ -70,6 +72,7 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `/api/v1/whois?domain=example.com` | Registration only (RDAP, falling back to WHOIS) |
 | `/api/v1/propagation?domain=www.example.com&type=A` | Compare 8 public resolvers and the authoritative nameserver |
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
+| `/api/v1/blocklist?ip=203.0.113.5` | Check one IPv4 address against the IP blocklists |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
 | `/api/v1/health` | Liveness check |
 
@@ -117,9 +120,11 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 
 ## Known limitations
 
-- **No rate limiting yet.** Add a Vercel Firewall rule (for example, 10 requests per minute per IP on `/api/`) before promoting the tool publicly.
 - **Tailwind runs as the browser build,** which generates CSS on each page load. A one-time compiled stylesheet would load faster.
 - **DKIM under a custom selector** can only be found with the selector check, by reading `s=` from a sent email's `DKIM-Signature` header.
 - **Technology detection** reads the home page only and uses signature matching. Sites can hide their software, and bot-protection pages (Cloudflare and similar) limit what's visible.
 - **Hosting detection** names the network or CDN. Behind Cloudflare and similar CDNs, the real origin server can't be seen from DNS.
+- **Spamhaus and Barracuda aren't queried.** Spamhaus refuses lookups from cloud platforms such as AWS, where Vercel runs, and Barracuda needs registration. The report links to Spamhaus's own checker instead. Spamhaus's free Data Query Service (a key) could be added later.
+- **Blocklists cover IPv4 only;** almost no lists publish IPv6 data.
+- **No deliverability (inbox placement) test.** That needs real seed mailboxes at Gmail, Outlook and others.
 - **Propagation and nameserver checks run from Vercel's region.** Anycast resolvers answer from their nearest site, so this isn't a worldwide view. Nameservers are checked over IPv4 only.

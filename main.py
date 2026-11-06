@@ -1984,6 +1984,150 @@ async def analyze_website(domain: str) -> dict:
     return res
 
 
+# ---- 3d-13. Blocklists (DNSBL for IPs, RHSBL for domains) ---------------------------------------------
+# How a DNS blocklist works: to ask "is 203.0.113.5 listed?", look up 5.113.0.203.<list zone>.
+# No answer (NXDOMAIN) = not listed. An answer in 127.0.0.0/8 = listed (the code says why).
+#
+# Two traps this code avoids:
+#  * Spamhaus refuses lookups coming from AWS, where Vercel runs, answering 127.255.255.254
+#    to everything. Naive tools show that as "listed". We don't query Spamhaus at all, and
+#    link to its own checker instead.
+#  * A list that shuts down or blocks us can answer "listed" for every address. RFC 5782 says
+#    a working list never lists 127.0.0.1 (IP lists) or INVALID (domain lists), so we test
+#    each list with that first and ignore lists that fail the test.
+IP_BLOCKLISTS: tuple[tuple[str, str, str], ...] = (
+    ("SpamCop", "bl.spamcop.net", "https://www.spamcop.net/"),
+    ("Mailspike", "bl.mailspike.net", "https://mailspike.org/"),
+    ("PSBL", "psbl.surriel.com", "https://psbl.org/"),
+    ("UCEPROTECT Level 1", "dnsbl-1.uceprotect.net", "https://www.uceprotect.net/"),
+    ("SpamRATS", "all.spamrats.com", "https://www.spamrats.com/"),
+    ("DroneBL", "dnsbl.dronebl.org", "https://dronebl.org/"),
+)
+DOMAIN_BLOCKLISTS: tuple[tuple[str, str, str], ...] = (
+    ("SURBL", "multi.surbl.org", "https://surbl.org/"),
+    ("URIBL", "multi.uribl.com", "https://uribl.com/"),
+)
+SPAMHAUS_CHECKER = "https://check.spamhaus.org/"
+_list_health: dict[str, Any] = {"at": 0.0, "ok": {}}
+
+
+async def _blocklist_answer(name: str) -> tuple[str, list[str]]:
+    """('listed', codes) | ('clean', []) | ('error', [])"""
+    try:
+        answers = await resolve(name, "A")
+    except DNSLookupError:
+        return "error", []
+    codes = sorted({r.address for r in answers})
+    return ("listed", codes) if codes else ("clean", [])
+
+
+def _is_refusal(codes: list[str]) -> bool:
+    """127.0.0.1 and 127.255.255.x mean "query refused"; anything outside 127/8 is a broken list."""
+    return any(c == "127.0.0.1" or c.startswith("127.255.255.") or not c.startswith("127.") for c in codes)
+
+
+async def _healthy_lists() -> dict[str, bool]:
+    """Test every list once (cached 10 minutes per function instance)."""
+    if _list_health["ok"] and time.monotonic() - _list_health["at"] < 600:
+        return _list_health["ok"]
+    # IP lists: 127.0.0.1 must NOT be listed and 127.0.0.2 MUST be (RFC 5782), which catches lists
+    # that refuse us (answer "listed" to everything) and dead lists (answer "not listed" to everything).
+    probes = [(zone, f"1.0.0.127.{zone}", "clean") for _, zone, _ in IP_BLOCKLISTS] + \
+             [(zone, f"2.0.0.127.{zone}", "listed") for _, zone, _ in IP_BLOCKLISTS] + \
+             [(zone, f"invalid.{zone}", "clean") for _, zone, _ in DOMAIN_BLOCKLISTS]
+    answers = await asyncio.gather(*(_blocklist_answer(q) for _, q, _ in probes))
+    ok: dict[str, bool] = {}
+    for (zone, _, expected), (state, codes) in zip(probes, answers):
+        good = state == expected and not (state == "listed" and _is_refusal(codes))
+        ok[zone] = ok.get(zone, True) and good
+    if any(ok.values()):  # don't remember a moment when every list failed (likely our own network)
+        _list_health.update(at=time.monotonic(), ok=ok)
+    return ok
+
+
+async def _check_list(name: str, zone: str, url: str, key: str, healthy: dict[str, bool]) -> dict:
+    entry: dict[str, Any] = {"list": name, "url": url, "state": "unavailable", "codes": [], "reason": None}
+    if not healthy.get(zone):
+        return entry
+    state, codes = await _blocklist_answer(f"{key}.{zone}")
+    if state == "listed" and _is_refusal(codes):
+        return entry
+    entry.update(state="unavailable" if state == "error" else state, codes=codes)
+    if state == "listed":
+        try:
+            txt = await get_txt(f"{key}.{zone}")
+            entry["reason"] = txt[0][:300] if txt else None
+        except DNSLookupError:
+            pass
+    return entry
+
+
+async def analyze_blocklists(domain: str | None, targets: list[tuple[str, list[str]]]) -> dict:
+    """targets = [(ipv4, ["Website", "Mail server (MX)", ...]), ...]"""
+    res: dict[str, Any] = {"status": "pass", "ips": [], "domain": domain, "domain_lists": [],
+                           "spamhaus_url": SPAMHAUS_CHECKER, "errors": [], "warnings": [], "notes": []}
+    healthy = await _healthy_lists()
+
+    async def per_ip(ip: str, roles: list[str]) -> dict:
+        key = ".".join(reversed(ip.split(".")))
+        lists = await asyncio.gather(*(_check_list(n, z, u, key, healthy) for n, z, u in IP_BLOCKLISTS))
+        return {"ip": ip, "roles": roles, "lists": list(lists)}
+
+    jobs = [per_ip(ip, roles) for ip, roles in targets]
+    if domain:
+        jobs.append(asyncio.gather(*(_check_list(n, z, u, domain, healthy) for n, z, u in DOMAIN_BLOCKLISTS)))
+    done = await asyncio.gather(*jobs)
+    if domain:
+        res["domain_lists"] = list(done.pop())
+    res["ips"] = list(done)
+
+    for entry in res["ips"]:
+        listed = [l["list"] for l in entry["lists"] if l["state"] == "listed"]
+        if not listed:
+            continue
+        mail_role = any(r != "Website" for r in entry["roles"])
+        message = f"{entry['ip']} ({', '.join(entry['roles'])}) is listed on {', '.join(listed)}."
+        if not mail_role:
+            res["warnings"].append(message + " This IP only serves the website, so it matters only if the same server also sends mail.")
+        elif len(listed) >= 2:
+            res["errors"].append(message + " Mail from this server is likely to be rejected or sent to spam. Fix the cause, then request removal from each list.")
+        else:
+            res["warnings"].append(message + " One listing can hurt delivery to some receivers. Check why, then request removal.")
+    listed_domain = [l["list"] for l in res["domain_lists"] if l["state"] == "listed"]
+    if listed_domain:
+        res["errors"].append(f"{domain} is listed on {', '.join(listed_domain)}. Email containing links to it is likely to be blocked.")
+
+    every = [l for e in res["ips"] for l in e["lists"]] + res["domain_lists"]
+    silent = sorted({l["list"] for l in every if l["state"] == "unavailable"})
+    if silent:
+        res["notes"].append(f"Couldn't check {', '.join(silent)}: the list refused or didn't answer our lookup.")
+    if not targets:
+        res["notes"].append("There were no public IPv4 addresses to check.")
+    res["notes"].append("Spamhaus isn't checked here: it refuses automated lookups from cloud platforms like the one "
+                        "VdigDNS runs on. Check it by hand with Spamhaus's own free checker.")
+    res["status"] = _status(res["errors"], res["warnings"])
+    return res
+
+
+def blocklist_targets(hosting: dict, mail: dict, spf: dict) -> list[tuple[str, list[str]]]:
+    """Website IPs, MX IPs, and single IPs the SPF record authorises to send (the outbound ones)."""
+    roles: dict[str, list[str]] = {}
+
+    def add(ip: str, role: str) -> None:
+        if ":" not in ip and is_public_ip(ip) and role not in roles.setdefault(ip, []):
+            roles[ip].append(role)
+    for i in hosting.get("ips") or []:
+        add(i.get("ip", ""), "Website")
+    for mx in mail.get("mx") or []:
+        for ip in mx.get("ips") or []:
+            add(ip, "Mail server (MX)")
+    for ip in re.findall(r"(?<!\S)\+?ip4:(\d{1,3}(?:\.\d{1,3}){3})(?:/32)?(?=\s|$)", spf.get("record") or ""):
+        add(ip, "Sending server (SPF)")
+    order = {"Sending server (SPF)": 0, "Mail server (MX)": 1, "Website": 2}  # mail-related IPs first
+    ranked = sorted(roles.items(), key=lambda kv: min(order[r] for r in kv[1]))
+    return ranked[:8]
+
+
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
 def _decode(msg: Any) -> str:
     return msg.decode("utf-8", errors="replace") if isinstance(msg, bytes) else str(msg)
@@ -2379,6 +2523,9 @@ async def analyze(response: Response,
     if tls_res.get("alpn") is not None or tls_res.get("not_after"):
         web_res["http2"] = tls_res.get("alpn") == "h2"
 
+    # Stage 2: blocklists need the IPs found above (website, MX, SPF senders)
+    blocklist_res = await _safe("Blocklists", analyze_blocklists(clean, blocklist_targets(hosting_res, mail_res, spf_res)), 15)
+
     # CAA belongs with the certificate: show it in the SSL section and cross-check the issuer.
     tls_res["caa"] = caa_res
     mismatch = caa_vs_certificate(caa_res, tls_res)
@@ -2410,6 +2557,7 @@ async def analyze(response: Response,
         "mail": mail_res,
         "nameservers": ns_res,
         "mail_security": mailsec_res,
+        "blocklists": blocklist_res,
         "tls": tls_res,
     }
     _cache_set(clean, result)
@@ -2434,6 +2582,22 @@ async def propagation(response: Response,
         raise HTTPException(status_code=504, detail="The resolvers took too long to answer. Try again.") from exc
     _set_cdn_cache(response, 30)  # short: people re-run this while waiting for a change to spread
     return res
+
+
+@app.get("/api/v1/blocklist")
+async def blocklist(response: Response, ip: str = Query(..., min_length=7, max_length=45)) -> dict:
+    """Check one IPv4 address against the IP blocklists."""
+    try:
+        addr = ipaddress.ip_address(ip.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Enter an IPv4 address such as 203.0.113.5.") from exc
+    if addr.version != 4:
+        raise HTTPException(status_code=400, detail="Only IPv4 addresses can be checked: almost no blocklists cover IPv6.")
+    if not is_public_ip(str(addr)):
+        raise HTTPException(status_code=400, detail="That's a private or reserved address, so it can't be on a public blocklist.")
+    res = await _safe("Blocklists", analyze_blocklists(None, [(str(addr), ["Checked IP"])]), 15)
+    _set_cdn_cache(response, 30 if res.get("status") == "error" else 600)
+    return {"ip": str(addr), **res}
 
 
 @app.get("/api/v1/whois")
