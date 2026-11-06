@@ -2353,21 +2353,27 @@ async def analyze(response: Response,
     log.info("Analysing %s", clean)
 
     # All sections run concurrently; total time ≈ the slowest one.
-    (dns_res, reg_res, web_res, ns_res, hosting_res, spf_res, dmarc_res, dkim_res,
-     mail_res, mailsec_res, tls_res, caa_res) = await asyncio.gather(
-        _safe("DNS", lookup_dns_records(clean), 15),
-        _safe("Website", analyze_website(clean), 30),
-        _safe("Registration", analyze_registration(clean), 30),
-        _safe("Nameservers", analyze_nameservers(clean), 15),
-        _safe("Hosting", analyze_hosting(clean), 15),
-        _safe("SPF", analyze_spf(clean), 20),
-        _safe("DMARC", analyze_dmarc(clean), 15),
-        _safe("DKIM", analyze_dkim(clean), 15),
-        _safe("Mail/SMTP", analyze_mail(clean), 45),
-        _safe("Mail security", analyze_mail_security(clean), 20),
-        _safe("TLS", analyze_tls(clean), 25),
-        _safe("CAA", analyze_caa(clean), 10),
-    )
+    # Each check is named here, and its result is looked up by that same name below.
+    # (Unpacking a long list by position once swapped two sections' results.)
+    checks = {
+        "dns": _safe("DNS", lookup_dns_records(clean), 15),
+        "website": _safe("Website", analyze_website(clean), 30),
+        "registration": _safe("Registration", analyze_registration(clean), 30),
+        "nameservers": _safe("Nameservers", analyze_nameservers(clean), 15),
+        "hosting": _safe("Hosting", analyze_hosting(clean), 15),
+        "spf": _safe("SPF", analyze_spf(clean), 20),
+        "dmarc": _safe("DMARC", analyze_dmarc(clean), 15),
+        "dkim": _safe("DKIM", analyze_dkim(clean), 15),
+        "mail": _safe("Mail/SMTP", analyze_mail(clean), 45),
+        "mail_security": _safe("Mail security", analyze_mail_security(clean), 20),
+        "tls": _safe("TLS", analyze_tls(clean), 25),
+        "caa": _safe("CAA", analyze_caa(clean), 10),
+    }
+    results = dict(zip(checks, await asyncio.gather(*checks.values())))
+    dns_res, web_res, reg_res = results["dns"], results["website"], results["registration"]
+    ns_res, hosting_res, spf_res = results["nameservers"], results["hosting"], results["spf"]
+    dmarc_res, dkim_res, mail_res = results["dmarc"], results["dkim"], results["mail"]
+    mailsec_res, tls_res, caa_res = results["mail_security"], results["tls"], results["caa"]
     if mailsec_res.get("status") != "error":
         cross_check_mail_security(mailsec_res, mail_res, dmarc_res)
     if tls_res.get("alpn") is not None or tls_res.get("not_after"):
