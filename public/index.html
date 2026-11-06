@@ -63,7 +63,7 @@
     <div class="mx-auto max-w-5xl px-4 pt-7 sm:px-6">
       <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <!-- Logo: a sky circle with a navy check that doubles as the "V", then the wordmark -->
-        <a href="#" data-nav="report" aria-label="VdigDNS home" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
+        <a href="/" id="home-link" aria-label="VdigDNS home, start a new check" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
           <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
             <circle cx="16" cy="16" r="15" fill="#27AAE1" />
             <path d="M8.5 15.5l5 5.5L23.5 10" stroke="#262262" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
@@ -144,10 +144,10 @@
     <section id="intro" class="rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-10">
       <h2 class="semi-wide text-xl font-bold text-navy">What the report covers</h2>
       <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
-        <p><strong class="text-navy">Registration and hosting.</strong> Registrar, expiry and locks, which server serves the website, and which service handles its email.</p>
-        <p><strong class="text-navy">DNS records.</strong> A, AAAA, MX, TXT, CNAME, NS, SOA, CAA and common SRV names.</p>
-        <p><strong class="text-navy">SPF, DKIM and DMARC.</strong> Syntax, the 10-lookup limit, key strength and policy, with builders to fix what’s wrong.</p>
-        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, plus certificate expiry, covered names and allowed issuers.</p>
+        <p><strong class="text-navy">Website.</strong> Whether it’s up, how fast it answers, its redirects and security headers, and what it’s built with.</p>
+        <p><strong class="text-navy">Registration and hosting.</strong> Registrar, expiry and locks, who hosts the site, and who handles its email.</p>
+        <p><strong class="text-navy">DNS and email authentication.</strong> Every common record, nameserver health, and SPF, DKIM and DMARC with builders to fix them.</p>
+        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, MTA-STS, plus certificate expiry, covered names and allowed issuers.</p>
       </div>
     </section>
 
@@ -473,8 +473,12 @@ function fullRow(sectionEl) { return add(el("div", "border-t border-rule"), sect
 const SEVERITY = ["pass", "info", "warn", "fail", "error"];
 const worstStatus = (...statuses) => statuses.filter(Boolean).reduce((a, b) => (SEVERITY.indexOf(b) > SEVERITY.indexOf(a) ? b : a), "pass");
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "Not published";
+function verdictWeb(w) {
+  if (!w || w.status === "error") return "Couldn't be checked";
+  return w.summary || "Checked";
+}
 function verdictReg(r) {
-  if (!r.found) return r.status === "error" ? "Registry unreachable" : "No registry record";
+  if (!r.found) return r.summary || (r.status === "error" ? "Lookup failed" : "No registry record");
   if (r.days_to_expiry == null) return r.registrar ? `With ${r.registrar}` : "Registered";
   if (r.days_to_expiry < 0) return `Expired ${-r.days_to_expiry} days ago`;
   return `Expires in ${r.days_to_expiry} day${r.days_to_expiry === 1 ? "" : "s"}`;
@@ -519,9 +523,11 @@ function verdictTLS(t) {
    HERO: domain, hosting + email answer, health rail
    ===================================================================== */
 const RAIL = [
+  ["Website", "sec-web", (d) => d.website?.status, (d) => verdictWeb(d.website)],
   ["Domain", "sec-reg",  (d) => d.registration?.status, (d) => verdictReg(d.registration || {})],
   ["DNS",   "sec-dns",   (d) => worstStatus(d.dns?.status, d.nameservers?.status),
-                         (d) => d.nameservers?.errors?.length ? "Nameserver problem, see below" : verdictDNS(d.dns)],
+                         (d) => d.nameservers?.errors?.length ? "Nameserver problem, see below"
+                           : d.nameservers?.warnings?.length ? "Nameserver warning, see below" : verdictDNS(d.dns)],
   ["SPF",   "sec-spf",   (d) => d.spf?.status,   (d) => verdictSPF(d.spf)],
   ["DKIM",  "sec-dkim",  (d) => d.dkim?.status,  (d) => verdictDKIM(d.dkim)],
   ["DMARC", "sec-dmarc", (d) => d.dmarc?.status, (d) => verdictDMARC(d.dmarc)],
@@ -530,13 +536,13 @@ const RAIL = [
 ];
 
 function renderRail(data, pending = false) {
-  const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-7");
+  const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-8");
   rail.setAttribute("aria-label", "Results summary");
-  RAIL.forEach(([name, target, statusOf, verdictOf], index) => {
+  RAIL.forEach(([name, target, statusOf, verdictOf]) => {
     const status = pending ? "pending" : statusOf(data) || "error";
     let verdict = "Checking…";
     if (!pending) { try { verdict = verdictOf(data); } catch { verdict = st(status).word; } }
-    const a = el("a", `group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4 ${index === 0 ? "col-span-2 lg:col-span-1" : ""}`);
+    const a = el("a", "group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
     a.href = `#${target}`;
     a.addEventListener("click", (e) => { e.preventDefault(); $(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
     add(a,
@@ -573,9 +579,41 @@ function renderHosting(h) {
   return box;
 }
 
-/** Two plain sentences under the hosting answer: who it's registered with, and who handles email. */
+const APP_CATEGORIES = ["CMS", "Website builder", "E-commerce", "Static site generator", "JavaScript framework", "Web framework"];
+const techLabel = (t) => (t.version ? `${t.name} ${t.version}` : t.name);
+
+/** "built with WordPress 6.6.2 on Nginx" — the one-phrase answer to "what is this site made with?" */
+function builtWith(w) {
+  const techs = w.technologies || [];
+  const app = techs.find((t) => APP_CATEGORIES.includes(t.category));
+  const server = techs.find((t) => t.category === "Web server") || techs.find((t) => t.category === "CDN & hosting");
+  if (app && server) return `built with ${techLabel(app)} on ${server.name}`;
+  if (app) return `built with ${techLabel(app)}`;
+  if (server) return `served by ${server.name}`;
+  return "";
+}
+
+function websiteSentence(w) {
+  const built = builtWith(w);
+  switch (w.state) {
+    case "up": return `The website is up (${w.status_code} ${w.reason}, first response in ${w.response_ms} ms)${built ? ` and ${built}` : ""}.`;
+    case "challenge": return `The website is up behind a bot check${built ? ` and ${built}` : ""}.`;
+    case "server_error": return `The website is returning a server error (${w.status_code}).`;
+    case "client_error": return `The website’s home page returns ${w.status_code} ${w.reason}.`;
+    case "redirect_loop": return "The website is stuck in a redirect loop, so browsers can’t open it.";
+    case "down": return "The website is down: it didn’t respond over HTTPS or HTTP.";
+    case "no_site": return "This domain has no website (no A or AAAA record).";
+    default: return "";
+  }
+}
+
+const providerName = (n) => (n === "Own mail server" ? "its own mail server" : n.startsWith("Other (") ? n.slice(7, -1) : n);
+
+/** Short plain sentences under the hosting answer: website, registration, email. */
 function factsLines(data) {
   const box = el("div", "mt-4 max-w-3xl space-y-1 border-t border-rule pt-4 text-[15px] text-navy");
+  const webLine = data.website ? websiteSentence(data.website) : "";
+  if (webLine) add(box, el("p", "", webLine));
   const r = data.registration || {};
   if (r.found && r.registrar) {
     let t = `Registered with ${r.registrar}`;
@@ -587,7 +625,7 @@ function factsLines(data) {
   let text;
   if (m.null_mx) text = "This domain declares that it doesn’t receive email.";
   else if (!m.mx?.length) text = "This domain can’t receive email: it has no mail servers.";
-  else if (p.inbound?.length) text = `Email is handled by ${listFormat(p.inbound)}.`;
+  else if (p.inbound?.length) text = `Email is handled by ${listFormat(p.inbound.map(providerName))}.`;
   else text = "Email is handled by its own mail servers.";
   if (p.senders?.length) text += ` It also sends through ${listFormat(p.senders)}.`;
   return add(box, el("p", "", text));
@@ -615,11 +653,40 @@ function renderHero(data, { pending = false } = {}) {
       const link = `${location.origin}${location.pathname}?domain=${encodeURIComponent(data.domain)}`;
       copyText(link, share, null, "Copy report link");
     });
+    const asText = actionButton("Copy as text", async () => {
+      const text = reportText(data);
+      try {
+        await navigator.clipboard.writeText(text);
+        asText.textContent = "Copied";
+        setTimeout(() => (asText.textContent = "Copy as text"), 1800);
+      } catch {
+        showTextPanel(text);  // clipboard blocked: show the text, selected, to copy by hand
+      }
+    });
     add(hero, add(el("div", "mt-7 flex flex-wrap items-center gap-x-3 gap-y-3"),
-      share,
+      asText, share,
       actionButton("Check propagation", () => openPropagation(data.domain)),
-      el("p", "w-full text-xs text-ink/50 sm:ml-2 sm:w-auto", relativeChecked(data))));
+      el("p", "w-full text-xs text-ink/50 sm:ml-2 sm:w-auto", relativeChecked(data))),
+      el("div", "", null));
+    hero.lastChild.id = "text-panel";
   }
+}
+
+/** Fallback when the browser refuses clipboard access: the report text, pre-selected. */
+function showTextPanel(text) {
+  const panel = $("text-panel");
+  const area = el("textarea", "mt-4 h-72 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12px] leading-relaxed text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
+  area.readOnly = true;
+  area.value = text;
+  area.id = "report-text";
+  area.setAttribute("aria-label", "Report as plain text");
+  const close = actionButton("Close", () => panel.replaceChildren());
+  panel.replaceChildren(add(el("div", "mt-2"),
+    add(el("div", "flex flex-wrap items-center justify-between gap-3"),
+      el("p", "text-[14px] text-ink/70", "Your browser blocked automatic copying. The text is selected: press Ctrl+C (Cmd+C on a Mac)."), close),
+    area));
+  area.focus();
+  area.select();
 }
 
 /** Grey placeholder sections shown while a report loads, so the page doesn't jump. */
@@ -894,6 +961,8 @@ function renderReport(data) {
   const s = $("sections");
   s.replaceChildren();
   add(s,
+    fullRow(renderAttention(data)),
+    fullRow(renderWebsite(data.website || {})),
     fullRow(renderRegistration(data.registration || {})),
     fullRow(renderDNS(data.dns)),
     fullRow(renderNameservers(data.nameservers || {})),
@@ -901,6 +970,266 @@ function renderReport(data) {
     pairRow(renderDKIM(data.dkim || {}, data.domain), renderMail(data.mail, data.providers)),
     fullRow(renderMailSecurity(data.mail_security || {})),
     fullRow(renderTLS(data.tls)));
+}
+
+/* ---- What needs attention: every problem across the report, worst first ---- */
+const SECTIONS = [
+  ["website", "sec-web", "Website"], ["registration", "sec-reg", "Domain registration"],
+  ["hosting", "hero", "Hosting"], ["dns", "sec-dns", "DNS records"], ["nameservers", "sec-ns", "Nameservers"],
+  ["spf", "sec-spf", "SPF"], ["dmarc", "sec-dmarc", "DMARC"], ["dkim", "sec-dkim", "DKIM"],
+  ["mail", "sec-mail", "Mail servers"], ["mail_security", "sec-mailsec", "MTA-STS, TLS reporting and BIMI"],
+  ["tls", "sec-tls", "SSL certificate"],
+];
+function attentionItems(data) {
+  const items = [];
+  SECTIONS.forEach(([key, target, name]) => {
+    const sec = data[key] || {};
+    (sec.errors || []).forEach((text) => items.push({ level: "fail", name, target, text }));
+    (sec.warnings || []).forEach((text) => items.push({ level: "warn", name, target, text }));
+  });
+  return items.sort((a, b) => (a.level === b.level ? 0 : a.level === "fail" ? -1 : 1));
+}
+
+function renderAttention(data) {
+  const items = attentionItems(data);
+  const fails = items.filter((i) => i.level === "fail").length, warns = items.length - fails;
+  const parts = [];
+  if (fails) parts.push(`${fails} problem${fails === 1 ? "" : "s"} to fix`);
+  if (warns) parts.push(`${warns} warning${warns === 1 ? "" : "s"}`);
+  const verdict = items.length ? parts.join(" and ") : "Nothing. Every check passed or is for information only.";
+  const { wrap, body } = section("sec-attention", "What needs attention", fails ? "fail" : warns ? "warn" : "pass", verdict);
+  wrap.classList.add("bg-canvas/50");
+  if (!items.length) return wrap;
+  const LIMIT = 6;
+  const list = el("ul", "space-y-2");
+  items.forEach((item, i) => {
+    const li = el("li", `grid grid-cols-[auto_1fr] items-start gap-3 rounded-lg bg-white px-3 py-2.5 ring-1 ring-rule ${i >= LIMIT ? "hidden" : ""}`);
+    const link = el("a", "font-semibold text-navy underline decoration-rule underline-offset-4 hover:text-blue hover:decoration-sky", item.name);
+    link.href = `#${item.target}`;
+    link.addEventListener("click", (e) => { e.preventDefault(); $(item.target)?.scrollIntoView({ behavior: "smooth" }); });
+    add(list, add(li, pill(item.level), add(el("p", "min-w-0 break-anywhere text-[14px] leading-snug"), link, el("span", "text-ink/80", ` ${item.text}`))));
+  });
+  add(body, list);
+  if (items.length > LIMIT) {
+    const more = actionButton(`Show ${items.length - LIMIT} more`, () => {
+      list.querySelectorAll("li.hidden").forEach((li) => li.classList.remove("hidden"));
+      more.remove();
+    });
+    add(body, more);
+  }
+  return wrap;
+}
+
+/* ---- Website: up or down, redirects, technologies, security headers, raw headers ---- */
+function speedWord(ms) { return ms < 800 ? "fast" : ms < 1800 ? "moderate" : "slow"; }
+
+function renderWebsite(w) {
+  const { wrap, body } = section("sec-web", "Website", w.status || "error", verdictWeb(w));
+  add(body, findings(w));
+  if (!w.status_code) return wrap;
+
+  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const left = el("div", "min-w-0");
+  add(left,
+    row("Status", `${w.status_code} ${w.reason || ""}`.trim()),
+    row("First response", `${w.response_ms} ms, ${speedWord(w.response_ms)}`),
+    row("Final address", w.final_url, true),
+    row("http:// to https://", w.https_redirect === true ? "Redirects" : w.https_redirect === false ? "Doesn’t redirect" : "Port 80 closed (nothing to redirect)"),
+    w.http2 != null ? row("HTTP/2", w.http2 ? "Supported" : "Not supported") : null,
+    row("Compression", w.compression ? w.compression : "None"),
+    w.title ? row("Page title", w.title) : null,
+    w.server ? row("Server header", w.server, true) : null,
+    row("Address tested", w.ip, true));
+  if (w.hops?.length > 1) {
+    const ol = el("ol", "space-y-1.5");
+    w.hops.forEach((h) => add(ol, add(el("li", "grid grid-cols-[3rem_1fr] gap-3 text-[13px]"),
+      el("span", `tabular font-mono font-semibold ${h.status >= 400 ? "text-fail" : h.status >= 300 ? "text-blue" : "text-pass"}`, h.status),
+      el("span", "break-anywhere font-mono text-ink/80", h.url))));
+    add(left, add(el("div", "mt-5 space-y-2"), subheading(`Redirect path (${w.hops.length - 1} redirect${w.hops.length === 2 ? "" : "s"})`), ol));
+  }
+
+  const right = el("div", "min-w-0 space-y-4");
+  add(right, subheading("Built with"));
+  const techs = w.technologies || [];
+  if (!techs.length) {
+    add(right, el("p", "text-[14px] text-ink/70", "No known software detected. Sites can hide it, or run custom code."));
+  } else {
+    const groups = {};
+    techs.forEach((t) => (groups[t.category] ||= []).push(t));
+    Object.entries(groups).forEach(([cat, list]) => {
+      const chips = el("div", "flex flex-wrap gap-1.5");
+      list.forEach((t) => {
+        const chip = el("span", `rounded-md px-2 py-0.5 text-[13px] ${APP_CATEGORIES.includes(cat) ? "bg-navy font-semibold text-white" : "bg-canvas text-navy"}`, techLabel(t));
+        chip.title = `Found in: ${t.evidence.join(", ")}`;
+        add(chips, chip);
+      });
+      add(right, add(el("div", "grid grid-cols-[minmax(7rem,38%)_1fr] items-start gap-3"), el("div", "pt-0.5 text-[13px] text-ink/60", cat), chips));
+    });
+    add(right, el("p", "text-[12px] text-ink/50", "Detected from the home page’s code and headers. Hover a name to see where it was found."));
+  }
+  add(body, add(grid, left, right));
+
+  if (w.security?.length) {
+    const set = w.security.filter((h) => h.present).length;
+    const list = el("div", "grid gap-x-8 gap-y-3 sm:grid-cols-2");
+    w.security.forEach((h) => add(list, add(el("div", "min-w-0"),
+      add(el("div", "flex flex-wrap items-baseline gap-x-2"),
+        el("span", `text-xs font-semibold ${h.present ? "text-pass" : "text-ink/50"}`, h.present ? "Set" : "Missing"),
+        el("span", "break-anywhere font-mono text-[13px] font-semibold text-navy", h.header)),
+      el("p", "text-[13px] leading-snug text-ink/70", h.note ? `${h.explain} Note: ${h.note}.` : h.explain))));
+    add(body, add(el("div", "space-y-3 border-t border-rule pt-5"), subheading(`Security headers (${set} of ${w.security.length} set)`), list));
+  }
+
+  if (w.headers?.length) {
+    const details = el("details", "group border-t border-rule pt-4");
+    const summary = el("summary", "cursor-pointer select-none text-sm font-semibold text-blue hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky",
+      `Show all response headers (${w.headers.length})`);
+    add(details, summary, add(el("div", "mt-3"), recordBlock(w.headers.map(([k, v]) => `${k}: ${v}`).join("\n"))));
+    add(body, details);
+  }
+  return wrap;
+}
+
+/* ---- The whole report as plain text, for tickets, email and chat ---- */
+function reportText(d) {
+  const L = [];
+  const tag = (s) => `[${st(s || "error").word.toUpperCase()}]`;
+  const kv = (label, value) => { if (value !== null && value !== undefined && value !== "") L.push(`  ${label}: ${value}`); };
+  const head = (title, status) => L.push("", status ? `${title.toUpperCase()}  ${tag(status)}` : title.toUpperCase());
+  const notes = (sec) => {
+    (sec?.errors || []).forEach((m) => L.push(`  x ${m}`));
+    (sec?.warnings || []).forEach((m) => L.push(`  ! ${m}`));
+    (sec?.notes || []).forEach((m) => L.push(`  i ${m}`));
+  };
+  const link = `${location.origin}${location.pathname}?domain=${encodeURIComponent(d.domain)}`;
+
+  L.push(`VdigDNS report for ${d.domain}`);
+  L.push(d.sample ? "Sample data" : `Checked ${new Date(d.checked_at).toUTCString()}`);
+  if (/^https?:/.test(location.origin)) L.push(link);
+
+  head("Summary");
+  RAIL.forEach(([name, , statusOf, verdictOf]) => {
+    let v = ""; try { v = verdictOf(d); } catch { v = ""; }
+    L.push(`  ${tag(statusOf(d)).padEnd(10)} ${name.padEnd(8)} ${v}`);
+  });
+  const items = attentionItems(d);
+  if (items.length) {
+    head("Needs attention");
+    items.forEach((i) => L.push(`  ${i.level === "fail" ? "x" : "!"} ${i.name}: ${i.text}`));
+  }
+
+  const w = d.website || {};
+  head("Website", w.status);
+  if (w.status_code) {
+    kv("Status", `${w.status_code} ${w.reason || ""}`.trim());
+    kv("First response", `${w.response_ms} ms`);
+    kv("Final address", w.final_url);
+    if (w.hops?.length > 1) kv("Redirect path", w.hops.map((h) => `${h.url} (${h.status})`).join(" > "));
+    kv("http:// to https://", w.https_redirect === true ? "redirects" : w.https_redirect === false ? "doesn't redirect" : "port 80 closed");
+    if (w.http2 != null) kv("HTTP/2", w.http2 ? "supported" : "not supported");
+    kv("Built with", (w.technologies || []).map(techLabel).join(", ") || "nothing detected");
+    if (w.security?.length) {
+      const missing = w.security.filter((h) => !h.present).map((h) => h.header);
+      kv("Security headers", `${w.security.length - missing.length} of ${w.security.length} set${missing.length ? `; missing ${missing.join(", ")}` : ""}`);
+    }
+  }
+  notes(w);
+
+  const h = d.hosting || {};
+  head("Hosting");
+  kv("Answer", h.headline);
+  (h.ips || []).forEach((i) => L.push(`  ${i.ip}  ${i.ptr?.[0] || "no PTR"}${i.owner?.asn ? `  (${i.owner.provider || i.owner.as_name}, AS${i.owner.asn})` : ""}`));
+  kv("Email provider", (d.providers?.inbound || []).map(providerName).join(", "));
+  kv("Also sends via", (d.providers?.senders || []).join(", "));
+
+  const r = d.registration || {};
+  head("Domain registration", r.status);
+  if (r.found) {
+    kv("Registrar", r.registrar);
+    kv("Registered", r.created ? fmtDate(r.created) : null);
+    kv("Expires", r.expires ? `${fmtDate(r.expires)}${r.days_to_expiry != null ? ` (in ${r.days_to_expiry} days)` : ""}` : null);
+    kv("Status", (r.status_labels || []).map((x) => x.label).join(", "));
+    kv("DNSSEC", r.dnssec === true ? "signed" : r.dnssec === false ? "not signed" : null);
+    kv("Nameservers", (r.nameservers || []).join(", "));
+    kv("Source", r.source);
+  }
+  notes(r);
+
+  const dns = d.dns || {};
+  head("DNS records", dns.status);
+  Object.entries(dns.records || {}).forEach(([type, info]) => {
+    (info.records || []).forEach((rec, i) => L.push(`  ${(i ? "" : type).padEnd(6)} ${recordText(type, rec)}`));
+  });
+  notes(dns);
+
+  const ns = d.nameservers || {};
+  head("Nameservers", ns.status);
+  (ns.servers || []).forEach((x) => L.push(`  ${x.host} (${x.ip || "no IPv4"})  ${x.authoritative ? "authoritative" : x.reachable ? "NOT authoritative" : "no answer"}${x.serial != null ? `  serial ${x.serial}` : ""}${x.rtt_ms != null ? `  ${x.rtt_ms} ms` : ""}`));
+  notes(ns);
+
+  const spf = d.spf || {};
+  head("SPF", spf.status);
+  kv("Record", spf.record);
+  if (spf.found) kv("DNS lookups", `${spf.lookup_count} of ${spf.lookup_limit}`);
+  notes(spf);
+
+  const dm = d.dmarc || {};
+  head("DMARC", dm.status);
+  kv("Record", dm.record);
+  notes(dm);
+
+  const k = d.dkim || {};
+  head("DKIM", k.status);
+  (k.selectors || []).forEach((x) => L.push(`  ${x.selector}: ${x.revoked ? "revoked key" : x.key_type === "ed25519" ? "Ed25519" : x.bits ? `RSA ${x.bits}-bit` : "unreadable key"}  ${tag(x.status)}`));
+  notes(k);
+
+  const m = d.mail || {};
+  head("Mail servers", m.status);
+  (m.mx || []).forEach((x) => L.push(`  ${x.implicit ? "fallback" : `priority ${x.preference}`}  ${x.host}${x.ips?.length ? `  ${x.ips.join(", ")}` : ""}`));
+  (m.rdns || []).forEach((x) => L.push(`  rDNS ${x.ip}: ${x.ptr?.[0] || "no PTR"} (${x.forward_confirmed ? "confirmed" : "not confirmed"})`));
+  notes(m);
+
+  const ms = d.mail_security || {};
+  head("MTA-STS, TLS reporting and BIMI", ms.status);
+  kv("MTA-STS", ms.mta_sts?.found ? `set up${ms.mta_sts.policy?.mode ? `, mode ${ms.mta_sts.policy.mode}` : ""}` : "not set up");
+  kv("TLS reporting", ms.tls_rpt?.found ? "set up" : "not set up");
+  kv("BIMI", ms.bimi?.found ? "set up" : "not set up");
+  notes(ms);
+
+  const t = d.tls || {};
+  head("SSL certificate", t.status);
+  if (t.not_after) {
+    kv("Trusted", t.verified ? "yes" : `no (${t.verify_error})`);
+    kv("Issued to", t.subject_cn);
+    kv("Issued by", [t.issuer_org, t.issuer_cn].filter(Boolean).join(", "));
+    kv("Expires", `${fmtDate(t.not_after)} (in ${t.days_remaining} days)`);
+    if (t.sans?.length) kv("Covers", t.sans.length > 10 ? `${t.sans.slice(0, 10).join(", ")} and ${t.sans.length - 10} more` : t.sans.join(", "));
+    if (t.caa) kv("Allowed issuers (CAA)", t.caa.found ? t.caa.issuers.join(", ") : "any (no CAA record)");
+  }
+  notes(t);
+
+  L.push("", "x = problem   ! = warning   i = note", "Generated by VdigDNS");
+  return L.join("\n");
+}
+
+/* ---- Logo: back to a fresh, empty start page ---- */
+let reportSeq = 0;
+function goHome(e) {
+  e?.preventDefault();
+  reportSeq++;                      // ignore any check still in flight
+  currentReport = null;
+  $("domain-input").value = "";
+  $("error-box").classList.add("hidden");
+  $("report").classList.add("hidden");
+  $("hero").replaceChildren();
+  $("sections").replaceChildren();
+  $("intro").classList.remove("hidden");
+  $("try-row").classList.remove("hidden");
+  setLoading(false);
+  history.pushState(null, "", location.pathname);
+  showView("report");
+  window.scrollTo(0, 0);
+  $("domain-input").focus();
 }
 
 /* ---- Nameserver health ---- */
@@ -1314,6 +1643,35 @@ const SAMPLE = {
     ], errors: [], warnings: [], notes: [],
   },
   providers: { inbound: ["Google Workspace"], senders: ["SendGrid"] },
+  website: {
+    status: "pass", state: "up", summary: "Up, 200 OK in 212 ms", status_code: 200, reason: "OK",
+    final_url: "https://www.northwind.example/", ip: "203.0.113.24", response_ms: 212, redirects: 1,
+    hops: [{ url: "https://northwind.example/", status: 301, reason: "Moved Permanently", ms: 88 },
+           { url: "https://www.northwind.example/", status: 200, reason: "OK", ms: 212 }],
+    https_redirect: true, http2: true, cert_invalid: false, server: "nginx", compression: "gzip",
+    title: "Northwind Traders: kitchen and home goods",
+    technologies: [
+      { name: "WordPress", category: "CMS", version: "6.6.2", evidence: ["generator tag", "page code"] },
+      { name: "WooCommerce", category: "E-commerce", version: null, evidence: ["page code"] },
+      { name: "PHP", category: "Programming language", version: "8.2", evidence: ["X-Powered-By header"] },
+      { name: "Nginx", category: "Web server", version: null, evidence: ["Server header"] },
+      { name: "Cloudflare", category: "CDN & hosting", version: null, evidence: ["Cf-Ray header"] },
+      { name: "Google Tag Manager", category: "Analytics & marketing", version: null, evidence: ["page code"] },
+      { name: "jQuery", category: "JavaScript library", version: "3.7.1", evidence: ["page code"] },
+    ],
+    security: [
+      { header: "Strict-Transport-Security", present: true, explain: "Makes browsers always use HTTPS for this site.", note: null },
+      { header: "Content-Security-Policy", present: false, explain: "Limits where scripts and other content can load from.", note: null },
+      { header: "X-Frame-Options", present: true, explain: "Stops other sites from embedding this one (clickjacking).", note: null },
+      { header: "X-Content-Type-Options", present: true, explain: "Stops browsers from guessing file types.", note: null },
+      { header: "Referrer-Policy", present: false, explain: "Controls what is shared when visitors follow a link away.", note: null },
+      { header: "Permissions-Policy", present: false, explain: "Limits access to the camera, location and similar features.", note: null },
+    ],
+    headers: [["server", "nginx"], ["content-type", "text/html; charset=UTF-8"], ["content-encoding", "gzip"],
+              ["strict-transport-security", "max-age=31536000"], ["x-frame-options", "SAMEORIGIN"],
+              ["x-content-type-options", "nosniff"], ["cache-control", "max-age=600"], ["cf-ray", "8a1b2c3d4e5f-BOM"]],
+    errors: [], warnings: [], notes: [],
+  },
   nameservers: { status: "warn", zone: "northwind.example", errors: [], notes: [],
     warnings: ["SOA serials differ (ns1.dnshost.example = 2026110401, ns2.dnshost.example = 2026110301). Some nameservers haven't picked up the latest zone changes yet."],
     servers: [
@@ -1405,15 +1763,18 @@ async function analyze(domain) {
   renderHero({ domain }, { pending: true });
   $("sections").replaceChildren(skeletonSections());
   setLoading(true);
+  const seq = ++reportSeq;  // if the logo is clicked meanwhile, this result is dropped
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(`${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`, { signal: controller.signal });
     const data = await res.json().catch(() => ({}));
+    if (seq !== reportSeq) return;
     if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}). Try again in a minute.`);
     renderReport(data);
   } catch (err) {
+    if (seq !== reportSeq) return;
     $("report").classList.add("hidden");
     $("intro").classList.remove("hidden");
     $("try-row").classList.remove("hidden");
@@ -1422,7 +1783,7 @@ async function analyze(domain) {
     else showError(err.message);
   } finally {
     clearTimeout(timer);
-    setLoading(false);
+    if (seq === reportSeq) setLoading(false);
   }
 }
 
@@ -1448,6 +1809,7 @@ $("dmarc-form").addEventListener("submit", (e) => e.preventDefault());
 $("dmarc-copy").addEventListener("click", () => copyText($("dmarc-output").textContent, $("dmarc-copy"), $("dmarc-output")));
 
 $("search-form").addEventListener("submit", (e) => { e.preventDefault(); run($("domain-input").value); });
+$("home-link").addEventListener("click", goHome);
 document.querySelectorAll("[data-try]").forEach((b) => b.addEventListener("click", () => run(b.dataset.try)));
 $("sample-btn").addEventListener("click", () => {
   $("error-box").classList.add("hidden");
