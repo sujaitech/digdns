@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
+import http.client
 import ipaddress
 import json
 import logging
@@ -44,7 +46,9 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zlib
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -1072,23 +1076,28 @@ _WHOIS_NOT_FOUND = re.compile(r"no match|not found|no data found|no entries foun
 def _parse_whois_text(name: str, text: str, server: str) -> dict:
     def first(*labels: str) -> str | None:
         for label in labels:
-            m = re.search(rf"^\s*{label}\s*:\s*(.+?)\s*$", text, re.I | re.M)
+            # [ \t]* (not \s*) so an empty field never swallows the next line
+            m = re.search(rf"^[ \t]*{label}[ \t]*:[ \t]*(\S.*?)[ \t]*$", text, re.I | re.M)
             if m and m.group(1):
                 return m.group(1)
         return None
 
-    statuses = [s.split()[0] for s in re.findall(r"^\s*(?:Domain Status|status)\s*:\s*(.+?)\s*$", text, re.I | re.M)]
-    nameservers = re.findall(r"^\s*(?:Name Server|nserver|Nameservers?|Host Name)\s*:\s*(\S+)", text, re.I | re.M)
+    statuses = [s.split()[0] for s in re.findall(r"^[ \t]*(?:Domain Status|status)[ \t]*:[ \t]*(\S.*?)[ \t]*$", text, re.I | re.M)]
+    nameservers = re.findall(r"^[ \t]*(?:Name Server|nserver|Nameservers?|Host Name)[ \t]*:[ \t]*(\S+)", text, re.I | re.M)
     dnssec = first("DNSSEC")
     return {
         "domain": name,
-        "registrar": first("Registrar", "Registrar Name", "Sponsoring Registrar", "registrar"),
+        "registrar": first("Registrar", "Registrar Name", "Sponsoring Registrar", "Registrar Organization",
+                           "Registrar Organisation", "Sponsoring Registrar Organization"),
         "registrar_iana_id": first("Registrar IANA ID"),
         "abuse_email": first("Registrar Abuse Contact Email"),
-        "created": _parse_date(first("Creation Date", "Created On", "Created", "Registered on", "Registration Time", "created")),
-        "updated": _parse_date(first("Updated Date", "Last Modified", "Last Updated", "changed")),
-        "expires": _parse_date(first("Registry Expiry Date", "Registrar Registration Expiration Date", "Expiry Date",
-                                     "Expiration Date", "Expires On", "Expiration Time", "paid-till", "expire")),
+        "created": _parse_date(first("Creation Date", "Created On", "Created Date", "Created", "Registered on", "Registered",
+                                     "Registration Date", "Domain Registration Date", "Registration Time", "Record created")),
+        "updated": _parse_date(first("Updated Date", "Last Modified", "Last Updated", "Last update", "Modified",
+                                     "Record last updated", "changed")),
+        "expires": _parse_date(first("Registry Expiry Date", "Registry Expiration Date", "Registrar Registration Expiration Date",
+                                     "Expiry Date", "Expiration Date", "Domain Expiration Date", "Expires On", "Expires",
+                                     "Expire Date", "Expiration Time", "Renewal Date", "Valid Until", "paid-till", "expire")),
         "statuses": statuses,
         "nameservers": sorted({n.lower().rstrip(".") for n in nameservers}),
         "dnssec": None if dnssec is None else not dnssec.lower().startswith("unsigned"),
@@ -1096,18 +1105,54 @@ def _parse_whois_text(name: str, text: str, server: str) -> dict:
     }
 
 
+class RegistryUnreachable(Exception):
+    """The registry has a WHOIS server, but it didn't answer (down, overloaded or rate-limiting us)."""
+
+    def __init__(self, server: str) -> None:
+        super().__init__(server)
+        self.server = server
+
+
+_HOSTNAME = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+
+
+def _iana_whois_server(tld: str) -> str | None:
+    """
+    IANA's own WHOIS says which server handles a TLD ("whois: whois.nic.xyz").
+    When a registry runs no WHOIS server, that line is present but EMPTY, so the
+    pattern must stay on one line ([ \t]*) and require a real hostname.
+    """
+    iana = _whois_query("whois.iana.org", tld)
+    m = re.search(rf"^(?:refer|whois):[ \t]*({_HOSTNAME})[ \t]*$", iana, re.M | re.I)
+    return m.group(1).lower() if m else None
+
+
+def _whois_query_retry(server: str, query: str) -> str:
+    """One retry after a short pause: small registries often drop the first connection."""
+    try:
+        return _whois_query(server, query)
+    except OSError:
+        time.sleep(0.6)
+        return _whois_query(server, query)
+
+
 def whois43_lookup(domain: str) -> dict | None:
-    """Blocking. Ask IANA which WHOIS server handles the TLD, then ask that server."""
-    iana = _whois_query("whois.iana.org", domain.rsplit(".", 1)[-1])
-    m = re.search(r"^(?:refer|whois):\s*(\S+)", iana, re.M | re.I)
-    if not m:
+    """
+    Blocking. Returns parsed data, {'not_found': True}, or None when the registry has
+    no WHOIS server at all. Raises RegistryUnreachable when its server won't answer;
+    any other OSError means IANA itself couldn't be reached.
+    """
+    server = _iana_whois_server(domain.rsplit(".", 1)[-1])
+    if not server:
         return None
-    server = m.group(1).strip()
-    for name in _candidates(domain):
-        text = _whois_query(server, name)
-        if _WHOIS_NOT_FOUND.search(text) or len(text.strip()) < 40:
-            continue
-        return _parse_whois_text(name, text, server)
+    try:
+        for name in _candidates(domain):
+            text = _whois_query_retry(server, name)
+            if _WHOIS_NOT_FOUND.search(text) or len(text.strip()) < 40:
+                continue
+            return _parse_whois_text(name, text, server)
+    except OSError as exc:
+        raise RegistryUnreachable(server) from exc
     return {"not_found": True, "source": "WHOIS", "server": server}
 
 
@@ -1136,25 +1181,44 @@ def _status_key(s: str) -> str:
 
 
 async def analyze_registration(domain: str) -> dict:
-    res: dict[str, Any] = {"status": "info", "found": False, "errors": [], "warnings": [], "notes": []}
-    data, rdap_error = None, None
+    """
+    Outcomes, so the report never blames the domain for a registry's limits:
+      found        -> registrar, dates, locks          (pass / warn / fail)
+      unavailable  -> registry publishes nothing online (info, not an error)
+      unreachable  -> registry's server didn't answer   (warn: usually temporary)
+      not found    -> registry has no such domain       (warn)
+      error        -> our side couldn't reach IANA      (error)
+    """
+    tld = domain.rsplit(".", 1)[-1]
+    res: dict[str, Any] = {"status": "info", "found": False, "summary": None, "errors": [], "warnings": [], "notes": []}
+    data, rdap_failed = None, False
     try:
         data = await asyncio.wait_for(run_in_threadpool(rdap_lookup, domain), timeout=14)
-    except Exception as exc:  # network error, bad JSON, timeout: fall through to WHOIS
-        rdap_error = f"{type(exc).__name__}"
+    except Exception:  # network error, bad JSON, timeout: fall through to WHOIS
+        rdap_failed = True
     if data is None:
         try:
-            data = await asyncio.wait_for(run_in_threadpool(whois43_lookup, domain), timeout=14)
+            data = await asyncio.wait_for(run_in_threadpool(whois43_lookup, domain), timeout=16)
+        except RegistryUnreachable as exc:
+            res.update(status="warn", summary="Registry didn't respond", source="WHOIS", server=exc.server)
+            res["warnings"].append(f"The .{tld} registry's WHOIS server ({exc.server}) didn't respond, so registration details "
+                                   "couldn't be read. This is usually temporary. Try again later.")
+            return res
         except Exception as exc:
-            res["status"] = "error"
-            res["errors"].append(f"The registry couldn't be reached (RDAP: {rdap_error or 'not offered'}, WHOIS: {type(exc).__name__}). Try again later.")
+            res.update(status="error", summary="Lookup failed")
+            res["errors"].append(f"IANA's directory of registries couldn't be reached ({type(exc).__name__}). Try again in a minute.")
             return res
     if data is None:
-        res["warnings"].append("This domain's registry offers no public RDAP or WHOIS service.")
-        res["status"] = "warn"
+        if rdap_failed:
+            res.update(status="warn", summary="Registry didn't respond")
+            res["warnings"].append(f"The .{tld} registry's RDAP service didn't respond, and it runs no WHOIS server to fall back to. Try again later.")
+        else:
+            res.update(status="info", summary="Not published by the registry", unavailable=True)
+            res["notes"].append(f"The .{tld} registry doesn't publish registration details online (it runs neither RDAP nor WHOIS), "
+                                "so the registrar and expiry date can't be looked up here. The domain's registrar can provide them.")
         return res
     if data.get("not_found"):
-        res.update(source=data.get("source"), server=data.get("server"), status="warn")
+        res.update(source=data.get("source"), server=data.get("server"), status="warn", summary="No registry record")
         res["warnings"].append("The registry has no record for this domain. It may be unregistered, or a subdomain of a name we couldn't identify.")
         return res
 
@@ -1509,6 +1573,417 @@ def cross_check_mail_security(sec: dict, mail: dict, dmarc: dict) -> None:
         sec["status"] = _status(sec["errors"], sec["warnings"])
 
 
+# ---- 3d-12. Website: is it up, redirects, response headers, security headers, technologies ----------
+# We write our own small HTTP client (instead of urllib's automatic redirects) for safety:
+# every hop's hostname is resolved by us, checked with is_public_ip(), and the
+# connection goes to THAT exact IP. A redirect to an internal address is refused.
+HTTP_TIMEOUT = 8.0
+MAX_REDIRECTS = 8
+BODY_LIMIT = 600_000          # bytes of HTML read for technology detection
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+HTTP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+           "Chrome/130.0 Safari/537.36 VdigDNS/1.0 (+https://dig.sujaiprojects.stream)")
+
+
+class NoAddress(Exception):
+    """The hostname has no A/AAAA record."""
+
+
+class BlockedTarget(Exception):
+    """The hostname points only to private/reserved addresses (SSRF protection)."""
+
+
+def _resolve_public(host: str, port: int) -> str:
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise NoAddress(host) from exc
+    ips = list(dict.fromkeys(info[4][0] for info in infos))
+    public = [ip for ip in ips if is_public_ip(ip)]
+    if not public:
+        raise BlockedTarget(host)
+    return next((ip for ip in public if ":" not in ip), public[0])  # prefer IPv4
+
+
+def _header(headers: list[tuple[str, str]], name: str) -> str | None:
+    name = name.lower()
+    return next((v for k, v in headers if k.lower() == name), None)
+
+
+def _decode_body(raw: bytes, encoding: str | None) -> bytes:
+    """Undo gzip/deflate. The body may be cut off at BODY_LIMIT, so decompress what's there."""
+    enc = (encoding or "").lower().strip()
+    try:
+        if enc == "gzip":
+            return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(raw, BODY_LIMIT * 4)
+        if enc == "deflate":
+            try:
+                return zlib.decompressobj().decompress(raw, BODY_LIMIT * 4)
+            except zlib.error:
+                return zlib.decompressobj(-zlib.MAX_WBITS).decompress(raw, BODY_LIMIT * 4)
+    except zlib.error:
+        return b""
+    return raw if enc in ("", "identity") else b""
+
+
+def _http_get(url: str, verify: bool = True) -> dict:
+    """One GET request, no redirects followed. Blocking."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    port = parts.port or (443 if scheme == "https" else 80)
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    ip = _resolve_public(host, port)
+    started = time.monotonic()
+    sock = socket.create_connection((ip, port), timeout=HTTP_TIMEOUT)
+    try:
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            if not verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_alpn_protocols(["http/1.1"])  # http.client only speaks HTTP/1.1
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        conn = http.client.HTTPConnection(host, port, timeout=HTTP_TIMEOUT)
+        conn.sock = sock  # already connected to the IP we checked
+        conn.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+        for key, value in (("Host", host if parts.port in (None, 80, 443) else f"{host}:{port}"),
+                           ("User-Agent", HTTP_UA),
+                           ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                           ("Accept-Encoding", "gzip, deflate"), ("Accept-Language", "en"), ("Connection", "close")):
+            conn.putheader(key, value)
+        conn.endheaders()
+        resp = conn.getresponse()
+        first_byte_ms = int((time.monotonic() - started) * 1000)
+        headers = resp.getheaders()
+        body = b"" if resp.status in REDIRECT_CODES or resp.status in (204, 304) else resp.read(BODY_LIMIT)
+        return {"url": url, "status": resp.status, "reason": resp.reason or "", "headers": headers, "raw_body": body,
+                "ttfb_ms": first_byte_ms, "ip": ip}
+    finally:
+        sock.close()
+
+
+def _follow(url: str, verify: bool = True) -> tuple[list[dict], dict]:
+    """GET and follow redirects (max 8). Returns (hops, final response)."""
+    hops: list[dict] = []
+    seen: set[str] = set()
+    resp: dict = {}
+    for _ in range(MAX_REDIRECTS + 1):
+        seen.add(url)
+        resp = _http_get(url, verify)
+        hops.append({"url": url, "status": resp["status"], "reason": resp["reason"], "ms": resp["ttfb_ms"]})
+        location = _header(resp["headers"], "location")
+        if resp["status"] in REDIRECT_CODES and location:
+            nxt = urllib.parse.urljoin(url, location.strip())
+            if urllib.parse.urlsplit(nxt).scheme.lower() not in ("http", "https"):
+                return hops, resp
+            if nxt in seen:
+                resp["redirect_loop"] = True
+                return hops, resp
+            url = nxt
+            continue
+        return hops, resp
+    resp["redirect_loop"] = True  # too many redirects
+    return hops, resp
+
+
+def _describe_failure(exc: Exception) -> str:
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return f"no answer within {HTTP_TIMEOUT:.0f} seconds"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection refused, nothing is listening"
+    if isinstance(exc, ssl.SSLError):
+        return f"the secure connection failed ({exc.reason or exc})"
+    if isinstance(exc, http.client.HTTPException):
+        return "the server sent an invalid HTTP response"
+    if isinstance(exc, OSError):
+        return f"network error ({exc.strerror or type(exc).__name__})"
+    return type(exc).__name__
+
+
+# ---- Technology detection (like Wappalyzer / BuiltWith, with our own signatures) ----
+# (name, category, where to look, pattern). Where: "html" = page code, "gen" = <meta name="generator">,
+# "cookie" = cookie names, "h:<name>" = a response header. A capture group, when present, is the version.
+TECH_RULES: tuple[tuple[str, str, str, str], ...] = (
+    # CMS
+    ("WordPress", "CMS", "gen", r"WordPress\s*([\d.]+)?"),
+    ("WordPress", "CMS", "html", r"/wp-(?:content|includes)/"),
+    ("WordPress", "CMS", "h:link", r"api\.w\.org"),
+    ("Joomla", "CMS", "gen", r"Joomla!?\s*([\d.]+)?"),
+    ("Joomla", "CMS", "html", r"/media/(?:jui|system)/js/|/components/com_[a-z]+/"),
+    ("Drupal", "CMS", "gen", r"Drupal\s*([\d.]+)?"),
+    ("Drupal", "CMS", "h:x-generator", r"Drupal\s*([\d.]+)?"),
+    ("Drupal", "CMS", "h:x-drupal-cache", r"."),
+    ("Drupal", "CMS", "html", r"/sites/(?:default|all)/files/|drupal-settings-json"),
+    ("Ghost", "CMS", "gen", r"Ghost\s*([\d.]+)?"),
+    ("TYPO3", "CMS", "gen", r"TYPO3"),
+    ("Umbraco", "CMS", "html", r"/umbraco/"),
+    ("Craft CMS", "CMS", "h:x-powered-by", r"Craft CMS"),
+    ("Blogger", "CMS", "gen", r"Blogger"),
+    ("Hugo", "Static site generator", "gen", r"Hugo\s*([\d.]+)?"),
+    ("Jekyll", "Static site generator", "gen", r"Jekyll\s*v?([\d.]+)?"),
+    ("Docusaurus", "Static site generator", "gen", r"Docusaurus\s*v?([\d.]+)?"),
+    # Website builders
+    ("Wix", "Website builder", "h:x-wix-request-id", r"."),
+    ("Wix", "Website builder", "html", r"static\.wixstatic\.com|static\.parastorage\.com"),
+    ("Squarespace", "Website builder", "html", r"static1\.squarespace\.com|squarespace-cdn\.com"),
+    ("Webflow", "Website builder", "html", r"data-wf-(?:page|site)=|website-files\.com"),
+    ("Framer", "Website builder", "html", r"framerusercontent\.com"),
+    ("Weebly", "Website builder", "html", r"editmysite\.com|weebly\.com/weebly/"),
+    ("GoDaddy Website Builder", "Website builder", "gen", r"Go Daddy Website Builder|Starfield Technologies"),
+    ("GoDaddy Website Builder", "Website builder", "html", r"img1\.wsimg\.com/blobby"),
+    ("Duda", "Website builder", "html", r"multiscreensite\.com|dudaone\.com"),
+    ("Carrd", "Website builder", "html", r"carrd\.co"),
+    # E-commerce
+    ("Shopify", "E-commerce", "h:x-shopid", r"."),
+    ("Shopify", "E-commerce", "html", r"cdn\.shopify\.com|Shopify\.theme"),
+    ("WooCommerce", "E-commerce", "html", r"woocommerce"),
+    ("Magento", "E-commerce", "html", r"Mage\.Cookies|data-mage-init|/static/version\d+/frontend/"),
+    ("PrestaShop", "E-commerce", "gen", r"PrestaShop"),
+    ("PrestaShop", "E-commerce", "cookie", r"PrestaShop-"),
+    ("OpenCart", "E-commerce", "html", r"catalog/view/theme/|index\.php\?route=common/"),
+    ("BigCommerce", "E-commerce", "html", r"cdn\d*\.bigcommerce\.com"),
+    # JavaScript frameworks
+    ("Next.js", "JavaScript framework", "h:x-powered-by", r"Next\.js\s*([\d.]+)?"),
+    ("Next.js", "JavaScript framework", "html", r"__NEXT_DATA__|/_next/static/"),
+    ("Nuxt", "JavaScript framework", "html", r"__NUXT__|/_nuxt/"),
+    ("Gatsby", "JavaScript framework", "html", r'id="___gatsby"'),
+    ("Remix", "JavaScript framework", "html", r"__remixContext"),
+    ("SvelteKit", "JavaScript framework", "html", r"__sveltekit|data-sveltekit"),
+    ("Astro", "JavaScript framework", "html", r"<astro-island|/_astro/"),
+    ("Angular", "JavaScript framework", "html", r'ng-version="([\d.]+)"'),
+    ("React", "JavaScript framework", "html", r"data-reactroot|react-dom(?:\.production)?(?:\.min)?\.js"),
+    ("Vue.js", "JavaScript framework", "html", r"data-v-[0-9a-f]{8}|vue(?:\.runtime)?(?:\.global)?(?:\.prod)?(?:\.min)?\.js"),
+    # Back-end frameworks and languages
+    ("Laravel", "Web framework", "cookie", r"laravel_session"),
+    ("Django", "Web framework", "html", r"csrfmiddlewaretoken"),
+    ("Ruby on Rails", "Web framework", "html", r'name="csrf-param" content="authenticity_token"'),
+    ("Express", "Web framework", "h:x-powered-by", r"Express"),
+    ("ASP.NET", "Web framework", "h:x-aspnet-version", r"([\d.]+)"),
+    ("ASP.NET", "Web framework", "h:x-powered-by", r"ASP\.NET"),
+    ("ASP.NET", "Web framework", "html", r"__VIEWSTATE"),
+    ("ASP.NET", "Web framework", "cookie", r"ASP\.NET_SessionId"),
+    ("PHP", "Programming language", "h:x-powered-by", r"PHP/?([\d.]+)?"),
+    ("PHP", "Programming language", "cookie", r"PHPSESSID"),
+    # Web servers
+    ("Nginx", "Web server", "h:server", r"nginx(?:/([\d.]+))?"),
+    ("Apache", "Web server", "h:server", r"Apache(?:/([\d.]+))?"),
+    ("LiteSpeed", "Web server", "h:server", r"LiteSpeed"),
+    ("Microsoft IIS", "Web server", "h:server", r"Microsoft-IIS(?:/([\d.]+))?"),
+    ("Caddy", "Web server", "h:server", r"Caddy"),
+    ("OpenResty", "Web server", "h:server", r"openresty(?:/([\d.]+))?"),
+    ("Envoy", "Web server", "h:server", r"envoy"),
+    # CDN and hosting
+    ("Cloudflare", "CDN & hosting", "h:cf-ray", r"."),
+    ("Amazon CloudFront", "CDN & hosting", "h:x-amz-cf-id", r"."),
+    ("Fastly", "CDN & hosting", "h:x-fastly-request-id", r"."),
+    ("Fastly", "CDN & hosting", "h:x-served-by", r"cache-[a-z]{3}"),
+    ("Akamai", "CDN & hosting", "h:server", r"AkamaiGHost|AkamaiNetStorage"),
+    ("Vercel", "CDN & hosting", "h:x-vercel-id", r"."),
+    ("Netlify", "CDN & hosting", "h:x-nf-request-id", r"."),
+    ("GitHub Pages", "CDN & hosting", "h:server", r"GitHub\.com"),
+    ("Varnish", "CDN & hosting", "h:x-varnish", r"."),
+    ("WP Engine", "CDN & hosting", "h:x-powered-by", r"WP Engine"),
+    ("Kinsta", "CDN & hosting", "h:x-kinsta-cache", r"."),
+    ("Bunny CDN", "CDN & hosting", "h:server", r"BunnyCDN"),
+    ("Azure Front Door", "CDN & hosting", "h:x-azure-ref", r"."),
+    ("Sucuri", "Security", "h:x-sucuri-id", r"."),
+    # Analytics and marketing
+    ("Google Analytics", "Analytics & marketing", "html", r"google-analytics\.com/(?:analytics|ga)\.js|gtag/js\?id=G-"),
+    ("Google Tag Manager", "Analytics & marketing", "html", r"googletagmanager\.com/gtm\.js"),
+    ("Meta Pixel", "Analytics & marketing", "html", r"connect\.facebook\.net/[^\"']*/fbevents\.js"),
+    ("Hotjar", "Analytics & marketing", "html", r"static\.hotjar\.com"),
+    ("HubSpot", "Analytics & marketing", "html", r"js\.hs-scripts\.com|js\.hsforms\.net"),
+    ("Microsoft Clarity", "Analytics & marketing", "html", r"clarity\.ms/tag"),
+    ("Matomo", "Analytics & marketing", "html", r"matomo\.js|piwik\.js"),
+    ("Plausible", "Analytics & marketing", "html", r"plausible\.io/js"),
+    # JavaScript libraries and widgets
+    ("jQuery", "JavaScript library", "html", r"jquery[.-]?(\d+\.\d+(?:\.\d+)?)?(?:\.slim)?(?:\.min)?\.js"),
+    ("Bootstrap", "JavaScript library", "html", r"bootstrap(?:\.bundle)?(?:\.min)?\.(?:css|js)"),
+    ("Font Awesome", "JavaScript library", "html", r"font-?awesome"),
+    ("reCAPTCHA", "Security", "html", r"google\.com/recaptcha|recaptcha/api\.js"),
+    ("Cloudflare Turnstile", "Security", "html", r"challenges\.cloudflare\.com/turnstile"),
+)
+TECH_IMPLIES: dict[str, tuple[str, ...]] = {
+    "WordPress": ("PHP",), "WooCommerce": ("WordPress", "PHP"), "Joomla": ("PHP",), "Drupal": ("PHP",),
+    "Magento": ("PHP",), "PrestaShop": ("PHP",), "OpenCart": ("PHP",), "Laravel": ("PHP",),
+    "Next.js": ("React",), "Gatsby": ("React",), "Remix": ("React",), "Nuxt": ("Vue.js",),
+}
+TECH_CATEGORY_ORDER = ("CMS", "Website builder", "E-commerce", "Static site generator", "JavaScript framework",
+                       "Web framework", "Programming language", "Web server", "CDN & hosting", "Security",
+                       "Analytics & marketing", "JavaScript library")
+_TECH_CATEGORY = {name: cat for name, cat, _, _ in TECH_RULES}
+_EVIDENCE = {"html": "page code", "gen": "generator tag", "cookie": "cookie"}
+
+
+def detect_technologies(headers: list[tuple[str, str]], page: str) -> list[dict]:
+    values: dict[str, list[str]] = {}
+    for key, value in headers:
+        values.setdefault(key.lower(), []).append(value)
+    joined = {key: " ".join(v) for key, v in values.items()}
+    cookies = " ".join(c.split("=", 1)[0].strip() for c in values.get("set-cookie", []))
+    generators = re.findall(r"<meta[^>]+name=[\"']generator[\"'][^>]*content=[\"']([^\"']+)", page, re.I)
+    generators += re.findall(r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]*name=[\"']generator[\"']", page, re.I)
+    sources = {"html": page, "gen": " | ".join(generators), "cookie": cookies}
+
+    found: dict[str, dict] = {}
+    for name, category, where, pattern in TECH_RULES:
+        haystack = joined.get(where[2:], "") if where.startswith("h:") else sources.get(where, "")
+        match = re.search(pattern, haystack, re.I) if haystack else None
+        if not match:
+            continue
+        entry = found.setdefault(name, {"name": name, "category": category, "version": None, "evidence": []})
+        version = next((g for g in match.groups() if g), None)
+        if version and not entry["version"]:
+            entry["version"] = version.strip(".")
+        label = f"{where[2:].title()} header" if where.startswith("h:") else _EVIDENCE[where]
+        if label not in entry["evidence"]:
+            entry["evidence"].append(label)
+    for name in list(found):
+        for implied in TECH_IMPLIES.get(name, ()):
+            found.setdefault(implied, {"name": implied, "category": _TECH_CATEGORY.get(implied, "Programming language"),
+                                       "version": None, "evidence": [f"used by {name}"]})
+    order = {cat: i for i, cat in enumerate(TECH_CATEGORY_ORDER)}
+    return sorted(found.values(), key=lambda t: (order.get(t["category"], 99), t["name"]))
+
+
+SECURITY_HEADERS: tuple[tuple[str, str, str], ...] = (
+    ("strict-transport-security", "Strict-Transport-Security", "Makes browsers always use HTTPS for this site."),
+    ("content-security-policy", "Content-Security-Policy", "Limits where scripts and other content can load from."),
+    ("x-frame-options", "X-Frame-Options", "Stops other sites from embedding this one (clickjacking)."),
+    ("x-content-type-options", "X-Content-Type-Options", "Stops browsers from guessing file types."),
+    ("referrer-policy", "Referrer-Policy", "Controls what is shared when visitors follow a link away."),
+    ("permissions-policy", "Permissions-Policy", "Limits access to the camera, location and similar features."),
+)
+
+
+def _security_headers(headers: list[tuple[str, str]], https: bool) -> list[dict]:
+    out = []
+    csp = _header(headers, "content-security-policy") or ""
+    for key, name, explain in SECURITY_HEADERS:
+        value = _header(headers, key)
+        if key == "x-frame-options" and not value and "frame-ancestors" in csp.lower():
+            value = "covered by Content-Security-Policy frame-ancestors"
+        if key == "strict-transport-security" and not https:
+            value = None  # HSTS only counts when sent over HTTPS
+        note = None
+        if key == "strict-transport-security" and value:
+            m = re.search(r"max-age\s*=\s*(\d+)", value, re.I)
+            if not m or int(m.group(1)) < 15552000:
+                note = "max-age is under 6 months"
+        out.append({"header": name, "present": bool(value), "value": (value or "")[:300], "explain": explain, "note": note})
+    return out
+
+
+_CHALLENGE = re.compile(r"Just a moment\.\.\.|cf-chl|cf_chl_|Attention Required! \| Cloudflare|_Incapsula_|sgcaptcha", re.I)
+
+
+async def analyze_website(domain: str) -> dict:
+    res: dict[str, Any] = {"status": "fail", "state": "down", "errors": [], "warnings": [], "notes": [],
+                           "hops": [], "headers": [], "security": [], "technologies": []}
+
+    def secure_chain() -> tuple[list[dict], dict, bool]:
+        try:
+            hops, final = _follow(f"https://{domain}/", verify=True)
+            return hops, final, False
+        except ssl.SSLCertVerificationError:
+            hops, final = _follow(f"https://{domain}/", verify=False)  # still learn whether the site is up
+            return hops, final, True
+
+    https_try, http_try = await asyncio.gather(
+        asyncio.wait_for(run_in_threadpool(secure_chain), timeout=24),
+        asyncio.wait_for(run_in_threadpool(_http_get, f"http://{domain}/"), timeout=12),
+        return_exceptions=True)
+
+    # Does plain http:// send visitors to https://?
+    if isinstance(http_try, dict):
+        location = _header(http_try["headers"], "location") or ""
+        res["https_redirect"] = http_try["status"] in REDIRECT_CODES and location.lower().startswith("https://")
+        res["http_status"] = http_try["status"]
+    else:
+        res["https_redirect"] = None  # port 80 closed or unreachable: nothing to redirect
+
+    cert_invalid = False
+    if isinstance(https_try, tuple):
+        hops, final, cert_invalid = https_try
+    else:
+        if isinstance(https_try, (NoAddress, BlockedTarget)):
+            if isinstance(https_try, NoAddress):
+                res.update(status="info", state="no_site", summary="No website address")
+                res["notes"].append("The domain has no A or AAAA record, so there's no website to check.")
+            else:
+                res.update(status="info", state="blocked", summary="Not checked")
+                res["notes"].append("The domain points to a private or reserved address, so it can't be reached from the internet.")
+            return res
+        https_reason = _describe_failure(https_try)
+        try:  # HTTPS failed: is the site at least up over plain HTTP?
+            hops, final = await asyncio.wait_for(run_in_threadpool(_follow, f"http://{domain}/"), timeout=20)
+            res["warnings"].append(f"HTTPS doesn't work ({https_reason}). The site only loads over plain, unencrypted HTTP.")
+        except Exception as exc:
+            res["summary"] = "Down"
+            http_reason = _describe_failure(exc)
+            why = https_reason if http_reason == https_reason else f"HTTPS: {https_reason}; HTTP: {http_reason}"
+            res["errors"].append(f"The website didn't respond over HTTPS or HTTP ({why}). Visitors can't open it.")
+            return res
+
+    headers = final["headers"]
+    status = final["status"]
+    content_type = (_header(headers, "content-type") or "").lower()
+    body = _decode_body(final.get("raw_body", b""), _header(headers, "content-encoding"))
+    page = body.decode("utf-8", errors="replace") if ("html" in content_type or body.lstrip()[:1] == b"<") else ""
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I)
+    final_https = final["url"].lower().startswith("https://")
+
+    res.update({
+        "status_code": status, "reason": final["reason"], "final_url": final["url"], "ip": final["ip"],
+        "response_ms": final["ttfb_ms"], "hops": hops, "redirects": len(hops) - 1,
+        "cert_invalid": cert_invalid, "server": _header(headers, "server"),
+        "powered_by": _header(headers, "x-powered-by"), "compression": _header(headers, "content-encoding"),
+        "content_type": _header(headers, "content-type"),
+        "title": re.sub(r"\s+", " ", html.unescape(title_match.group(1))).strip()[:160] if title_match else None,
+        "headers": [[k, v[:400]] for k, v in headers[:60]],
+        "security": _security_headers(headers, final_https),
+        "technologies": detect_technologies(headers, page),
+    })
+
+    challenged = status in (403, 429, 503) and (
+        (_header(headers, "cf-mitigated") or "").lower() == "challenge" or bool(_CHALLENGE.search(page[:20000])))
+    if final.get("redirect_loop"):
+        res.update(state="redirect_loop", summary="Redirect loop")
+        res["errors"].append("The site keeps redirecting (a loop, or more than 8 redirects). Browsers will show an error.")
+    elif challenged:
+        res.update(state="challenge", summary="Up, behind a bot check")
+        res["notes"].append("A bot-protection page answered instead of the website. Real visitors probably see the site "
+                            "normally, but technology detection is limited.")
+    elif 200 <= status < 300:
+        res.update(state="up", summary=f"Up, {status} {final['reason']} in {final['ttfb_ms']} ms".strip())
+    elif status >= 500:
+        res.update(state="server_error", summary=f"Server error {status}")
+        res["errors"].append(f"The home page returns {status} {final['reason']}. The web server or application is failing.")
+    else:
+        res.update(state="client_error", summary=f"Returns {status}")
+        res["warnings"].append(f"The home page returns {status} {final['reason']}."
+                               + (" The server may be blocking automated checks like this one." if status in (401, 403, 429) else ""))
+
+    if res["state"] in ("up", "challenge"):
+        if cert_invalid:
+            res["warnings"].append("The site only loaded after ignoring a certificate error. Browsers will show a security "
+                                   "warning (see the SSL section).")
+        if res["https_redirect"] is False and final_https:
+            res["warnings"].append("http:// doesn't redirect to https://. Visitors who type the address without https stay "
+                                   "on an unencrypted connection.")
+        if final["ttfb_ms"] > 1500:
+            res["warnings"].append(f"The first response took {final['ttfb_ms'] / 1000:.1f} s. Under 0.8 s is good; slow "
+                                   "responses usually mean a slow server or no caching.")
+        if final_https and not any(h["present"] for h in res["security"] if h["header"] == "Strict-Transport-Security"):
+            res["notes"].append("No HSTS header. Adding Strict-Transport-Security makes browsers always use HTTPS.")
+    if res["state"] == "challenge" and not res["errors"] and not res["warnings"]:
+        res["status"] = "info"   # up as far as we can tell; the bot check isn't a fault
+    else:
+        res["status"] = _status(res["errors"], res["warnings"])
+    return res
+
+
 # ---- 3e. SMTP handshake (blocking code — runs in a worker thread) -----------------------------------
 def _decode(msg: Any) -> str:
     return msg.decode("utf-8", errors="replace") if isinstance(msg, bytes) else str(msg)
@@ -1702,12 +2177,17 @@ async def analyze_mail(domain: str) -> dict:
 
 
 # ---- 3f. TLS certificate inspector (blocking code — runs in a worker thread) ----------------------------
-def _fetch_peer_cert(ip: str, server_name: str, ctx: ssl.SSLContext) -> tuple[bytes, str, str]:
-    """Open TCP to ip:443, do the TLS handshake with SNI=server_name, return the raw cert."""
+def _fetch_peer_cert(ip: str, server_name: str, ctx: ssl.SSLContext) -> tuple[bytes, str, str, str | None]:
+    """
+    Open TCP to ip:443, do the TLS handshake with SNI=server_name, return the raw cert,
+    TLS version, cipher, and the ALPN protocol agreed ("h2" means the site supports HTTP/2).
+    """
+    ctx.set_alpn_protocols(["h2", "http/1.1"])
     with socket.create_connection((ip, 443), timeout=TLS_TIMEOUT) as raw:
         with ctx.wrap_socket(raw, server_hostname=server_name) as tls:
             cipher = tls.cipher()
-            return tls.getpeercert(binary_form=True), tls.version() or "", cipher[0] if cipher else ""
+            return (tls.getpeercert(binary_form=True), tls.version() or "", cipher[0] if cipher else "",
+                    tls.selected_alpn_protocol())
 
 
 def _first_attr(name: x509.Name, oid: Any) -> str | None:
@@ -1725,14 +2205,14 @@ def inspect_tls(domain: str, ip: str) -> dict:
     out: dict[str, Any] = {"host": domain, "ip": ip, "port": 443, "verified": False,
                            "verify_error": None, "errors": [], "warnings": []}
     try:
-        der, version, cipher = _fetch_peer_cert(ip, domain, ssl.create_default_context())
+        der, version, cipher, alpn = _fetch_peer_cert(ip, domain, ssl.create_default_context())
         out["verified"] = True
     except ssl.SSLCertVerificationError as exc:
         out["verify_error"] = exc.verify_message or str(exc)
         insecure = ssl.create_default_context()
         insecure.check_hostname = False
         insecure.verify_mode = ssl.CERT_NONE
-        der, version, cipher = _fetch_peer_cert(ip, domain, insecure)
+        der, version, cipher, alpn = _fetch_peer_cert(ip, domain, insecure)
 
     cert = x509.load_der_x509_certificate(der)
     not_after = cert.not_valid_after_utc
@@ -1757,6 +2237,7 @@ def inspect_tls(domain: str, ip: str) -> dict:
         "self_signed": cert.issuer == cert.subject,
         "tls_version": version,
         "cipher": cipher,
+        "alpn": alpn,
     })
 
     if not out["verified"]:
@@ -1872,9 +2353,10 @@ async def analyze(response: Response,
     log.info("Analysing %s", clean)
 
     # All sections run concurrently; total time ≈ the slowest one.
-    (dns_res, reg_res, ns_res, hosting_res, spf_res, dmarc_res, dkim_res,
+    (dns_res, reg_res, web_res, ns_res, hosting_res, spf_res, dmarc_res, dkim_res,
      mail_res, mailsec_res, tls_res, caa_res) = await asyncio.gather(
         _safe("DNS", lookup_dns_records(clean), 15),
+        _safe("Website", analyze_website(clean), 30),
         _safe("Registration", analyze_registration(clean), 30),
         _safe("Nameservers", analyze_nameservers(clean), 15),
         _safe("Hosting", analyze_hosting(clean), 15),
@@ -1888,6 +2370,8 @@ async def analyze(response: Response,
     )
     if mailsec_res.get("status") != "error":
         cross_check_mail_security(mailsec_res, mail_res, dmarc_res)
+    if tls_res.get("alpn") is not None or tls_res.get("not_after"):
+        web_res["http2"] = tls_res.get("alpn") == "h2"
 
     # CAA belongs with the certificate: show it in the SSL section and cross-check the issuer.
     tls_res["caa"] = caa_res
@@ -1910,6 +2394,7 @@ async def analyze(response: Response,
         "duration_ms": int((time.monotonic() - started) * 1000),
         "cached": False,
         "registration": reg_res,
+        "website": web_res,
         "dns": dns_res,
         "hosting": hosting_res,
         "providers": detect_providers(clean, mail_res, spf_res),
