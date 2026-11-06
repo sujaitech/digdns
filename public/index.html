@@ -77,6 +77,7 @@
           <a href="#propagation" data-nav="prop" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
           <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
+          <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Header analyzer</a>
         </nav>
       </div>
 
@@ -129,6 +130,12 @@
         <p class="mt-3 max-w-2xl text-white/80">Pick the services that send email for your domain. The record and its DNS lookup count update as you go, using the same check as the domain report.</p>
       </div>
 
+      <!-- Header block: email header analyzer -->
+      <div id="head-headers" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Read an email’s headers</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Paste the full headers of a message to see who really sent it, whether it passed SPF, DKIM and DMARC, and where it was delayed. It’s all worked out in your browser: the headers aren’t sent anywhere.</p>
+      </div>
+
       <!-- Header block: DMARC builder -->
       <div id="head-dmarc" hidden>
         <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Build a DMARC record</h1>
@@ -147,7 +154,7 @@
         <p><strong class="text-navy">Website.</strong> Whether it’s up, how fast it answers, its redirects and security headers, and what it’s built with.</p>
         <p><strong class="text-navy">Registration and hosting.</strong> Registrar, expiry and locks, who hosts the site, and who handles its email.</p>
         <p><strong class="text-navy">DNS and email authentication.</strong> Every common record, nameserver health, and SPF, DKIM and DMARC with builders to fix them.</p>
-        <p><strong class="text-navy">Mail servers and SSL.</strong> MX reverse DNS, MTA-STS, plus certificate expiry, covered names and allowed issuers.</p>
+        <p><strong class="text-navy">Mail servers, blocklists and SSL.</strong> MX reverse DNS, MTA-STS, whether your servers’ IPs are on spam blocklists, plus certificate expiry and allowed issuers.</p>
       </div>
     </section>
 
@@ -348,6 +355,37 @@
     </div>
   </main>
 
+  <!-- ================= VIEW: EMAIL HEADER ANALYZER ================= -->
+  <main id="view-headers" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <article class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]">
+      <form id="hdr-form" class="space-y-3 p-6 sm:p-8" autocomplete="off">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <label for="hdr-input" class="semi-wide text-lg font-bold text-navy">Message headers</label>
+          <details class="text-[13px] text-ink/70">
+            <summary class="cursor-pointer text-blue hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Where do I find them?</summary>
+            <ul class="mt-2 max-w-md space-y-1">
+              <li><strong class="text-navy">Gmail:</strong> open the message, click the three dots, then <em>Show original</em>.</li>
+              <li><strong class="text-navy">Outlook on the web:</strong> three dots, then <em>View</em>, then <em>View message source</em>.</li>
+              <li><strong class="text-navy">Outlook desktop:</strong> open the message, <em>File</em>, then <em>Properties</em>. Copy the <em>Internet headers</em> box.</li>
+              <li><strong class="text-navy">Apple Mail:</strong> <em>View</em>, then <em>Message</em>, then <em>All Headers</em>.</li>
+              <li><strong class="text-navy">Thunderbird:</strong> <em>View</em>, then <em>Message Source</em>.</li>
+            </ul>
+          </details>
+        </div>
+        <textarea id="hdr-input" rows="10" spellcheck="false" maxlength="400000" placeholder="Received: from mail.example.com (mail.example.com [203.0.113.5]) by mx.example.net …"
+                  class="w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-[13px] leading-relaxed text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20"></textarea>
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="submit" class="rounded-lg bg-navy px-6 py-2.5 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Analyze headers</button>
+          <button type="button" id="hdr-sample" class="rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Try a sample</button>
+          <button type="button" id="hdr-clear" class="text-sm text-ink/60 underline underline-offset-4 hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Clear</button>
+          <span class="text-[13px] text-ink/60">The whole message source works too; the body is ignored.</span>
+        </div>
+        <p id="hdr-error" role="alert" class="hidden text-[14px] text-fail"></p>
+      </form>
+      <div id="hdr-result" aria-live="polite"></div>
+    </article>
+  </main>
+
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
     VdigDNS is open source and doesn’t store the domains you check.
   </footer>
@@ -531,7 +569,8 @@ const RAIL = [
   ["SPF",   "sec-spf",   (d) => d.spf?.status,   (d) => verdictSPF(d.spf)],
   ["DKIM",  "sec-dkim",  (d) => d.dkim?.status,  (d) => verdictDKIM(d.dkim)],
   ["DMARC", "sec-dmarc", (d) => d.dmarc?.status, (d) => verdictDMARC(d.dmarc)],
-  ["Mail",  "sec-mail",  (d) => d.mail?.status,  (d) => verdictMail(d.mail, d.providers)],
+  ["Mail",  "sec-mail",  (d) => worstStatus(d.mail?.status, d.blocklists?.errors?.length ? "fail" : null),
+                         (d) => d.blocklists?.errors?.length ? "On a blocklist, see below" : verdictMail(d.mail, d.providers)],
   ["SSL",   "sec-tls",   (d) => d.tls?.status,   (d) => verdictTLS(d.tls)],
 ];
 
@@ -969,6 +1008,7 @@ function renderReport(data) {
     pairRow(renderSPF(data.spf, data.domain), renderDMARC(data.dmarc, data.domain)),
     pairRow(renderDKIM(data.dkim || {}, data.domain), renderMail(data.mail, data.providers)),
     fullRow(renderMailSecurity(data.mail_security || {})),
+    fullRow(renderBlocklists(data.blocklists || {})),
     fullRow(renderTLS(data.tls)));
 }
 
@@ -978,7 +1018,7 @@ const SECTIONS = [
   ["hosting", "hero", "Hosting"], ["dns", "sec-dns", "DNS records"], ["nameservers", "sec-ns", "Nameservers"],
   ["spf", "sec-spf", "SPF"], ["dmarc", "sec-dmarc", "DMARC"], ["dkim", "sec-dkim", "DKIM"],
   ["mail", "sec-mail", "Mail servers"], ["mail_security", "sec-mailsec", "MTA-STS, TLS reporting and BIMI"],
-  ["tls", "sec-tls", "SSL certificate"],
+  ["blocklists", "sec-bl", "Blocklists"], ["tls", "sec-tls", "SSL certificate"],
 ];
 function attentionItems(data) {
   const items = [];
@@ -1196,6 +1236,18 @@ function reportText(d) {
   kv("BIMI", ms.bimi?.found ? "set up" : "not set up");
   notes(ms);
 
+  const bl = d.blocklists || {};
+  head("Blocklists", bl.status);
+  (bl.ips || []).forEach((e) => {
+    const hits = e.lists.filter((l) => l.state === "listed").map((l) => l.list);
+    L.push(`  ${e.ip} (${e.roles.join(", ")}): ${hits.length ? `LISTED on ${hits.join(", ")}` : "not listed"}`);
+  });
+  if (bl.domain_lists?.length) {
+    const hits = bl.domain_lists.filter((l) => l.state === "listed").map((l) => l.list);
+    L.push(`  ${bl.domain} (domain): ${hits.length ? `LISTED on ${hits.join(", ")}` : "not listed"}`);
+  }
+  notes(bl);
+
   const t = d.tls || {};
   head("SSL certificate", t.status);
   if (t.not_after) {
@@ -1269,6 +1321,92 @@ function renderNameservers(n) {
   });
   add(body, list);
   if (n.zone) add(body, el("p", "text-[13px] text-ink/60", `Each server was asked directly for the SOA record of ${n.zone}.`));
+  return wrap;
+}
+
+/* ---- Blocklists: website, MX and SPF sending IPs, plus the domain itself ---- */
+const LIST_STATE = {
+  listed:      ["bg-fail-tint text-fail font-semibold", "Listed"],
+  clean:       ["bg-pass-tint text-pass", "Not listed"],
+  unavailable: ["bg-canvas text-ink/50", "Couldn’t check"],
+};
+function verdictBlocklists(b) {
+  if (b.status === "error") return "Couldn't be checked";
+  const ips = b.ips || [];
+  const hits = ips.filter((e) => e.lists.some((l) => l.state === "listed")).length;
+  const domainHit = (b.domain_lists || []).some((l) => l.state === "listed");
+  if (!hits && !domainHit) return ips.length ? `${ips.length} IP${ips.length === 1 ? "" : "s"} checked, none listed` : "Nothing to check";
+  const parts = [];
+  if (hits) parts.push(`${hits} of ${ips.length} IP${ips.length === 1 ? "" : "s"} listed`);
+  if (domainHit) parts.push("the domain is listed");
+  return parts.join(", ");
+}
+function listChips(lists) {
+  const chips = el("div", "flex flex-wrap gap-1.5");
+  lists.forEach((l) => {
+    const [cls, word] = LIST_STATE[l.state] || LIST_STATE.unavailable;
+    const chip = el(l.state === "listed" ? "a" : "span", `rounded-md px-2 py-0.5 text-[13px] ${cls}`, `${l.list}: ${word}`);
+    if (l.state === "listed") { chip.href = l.url; chip.target = "_blank"; chip.rel = "noopener"; chip.title = "Open this list's website to look up the reason and request removal"; chip.classList.add("underline", "underline-offset-2"); }
+    add(chips, chip);
+  });
+  return chips;
+}
+function listReasons(lists) {
+  const why = lists.filter((l) => l.state === "listed" && l.reason);
+  if (!why.length) return null;
+  return add(el("ul", "mt-2 space-y-1"), why.map((l) => el("li", "break-anywhere text-[13px] text-ink/70", `${l.list} says: ${l.reason}`)));
+}
+function blocklistRows(ips) {
+  const wrap = el("div", "divide-y divide-rule/70");
+  ips.forEach((e) => add(wrap, add(el("div", "grid gap-2 py-3 sm:grid-cols-[minmax(0,13rem)_1fr] sm:gap-4"),
+    add(el("div", "min-w-0"), el("div", "font-mono text-[13px] font-semibold text-navy", e.ip), el("div", "text-[12px] text-ink/60", e.roles.join(", "))),
+    add(el("div", "min-w-0"), listChips(e.lists), listReasons(e.lists)))));
+  return wrap;
+}
+function spamhausLink(url) {
+  const a = el("a", "inline-flex rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check Spamhaus by hand");
+  a.href = url || "https://check.spamhaus.org/"; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+/** Small "check one IP" form, used in the report and the header analyzer. */
+async function checkOneIp(ip, out) {
+  out.replaceChildren(el("p", "text-[13px] text-ink/60", `Checking ${ip} on 6 blocklists…`));
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/blocklist?ip=${encodeURIComponent(ip)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Check failed (HTTP ${res.status}).`);
+    const listed = data.ips?.[0]?.lists?.filter((l) => l.state === "listed").length || 0;
+    out.replaceChildren(
+      el("p", `text-[14px] font-semibold ${listed ? "text-fail" : "text-pass"}`, listed ? `${ip} is listed on ${listed} list${listed === 1 ? "" : "s"}.` : `${ip} isn’t listed on any list we could check.`),
+      add(el("div", "mt-2"), listChips(data.ips?.[0]?.lists || []), listReasons(data.ips?.[0]?.lists || [])));
+  } catch (err) {
+    out.replaceChildren(el("p", "text-[13px] text-fail", err instanceof TypeError ? "Couldn't reach the VdigDNS service." : err.message));
+  }
+}
+function renderBlocklists(b) {
+  const { wrap, body } = section("sec-bl", "Blocklists", b.status || "error", verdictBlocklists(b));
+  add(body, el("p", "-mt-2 max-w-3xl text-[13px] leading-snug text-ink/70",
+    "Mail servers check these public lists to decide whether to accept email. What matters most is the IP that sends your mail; a listed website IP only matters if that server also sends mail."));
+  add(body, findings(b));
+  if (b.ips?.length) add(body, blocklistRows(b.ips));
+  if (b.domain_lists?.length) add(body, add(el("div", "grid gap-2 border-t border-rule/70 pt-3 sm:grid-cols-[minmax(0,13rem)_1fr] sm:gap-4"),
+    add(el("div", "min-w-0"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", b.domain), el("div", "text-[12px] text-ink/60", "Domain, as a link in emails")),
+    add(el("div", "min-w-0"), listChips(b.domain_lists), listReasons(b.domain_lists))));
+
+  const form = el("form", "flex flex-col gap-2 sm:flex-row");
+  form.autocomplete = "off";
+  const label = el("label", "sr-only", "IPv4 address to check");
+  label.htmlFor = "bl-ip";
+  const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
+  Object.assign(input, { id: "bl-ip", type: "text", placeholder: "IPv4 address, e.g. a server that sends your mail", spellcheck: false, required: true, maxLength: 45, inputMode: "decimal" });
+  const btn = el("button", "rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check IP");
+  btn.type = "submit";
+  const out = el("div");
+  form.addEventListener("submit", (e) => { e.preventDefault(); if (input.value.trim()) checkOneIp(input.value.trim(), out); });
+  add(body, add(el("div", "space-y-2 border-t border-rule pt-5"),
+    subheading("Check another IP"),
+    el("p", "text-[13px] text-ink/70", "If your mail goes out through a different server, check that server’s IP. The header analyzer can find it in any email you’ve sent."),
+    add(form, label, input, btn), out, add(el("div", "pt-2"), spamhausLink(b.spamhaus_url))));
   return wrap;
 }
 
@@ -1588,11 +1726,480 @@ function loadDmarc(domain, record) {
 }
 
 /* =====================================================================
+   EMAIL HEADER ANALYZER
+   Everything here runs in the browser: pasted headers are never uploaded.
+   Only two optional buttons talk to the API, and they send just one value
+   (an IP for the blocklist check, or a domain + selector for the DKIM key).
+   ===================================================================== */
+
+/** RFC 2047 encoded words, e.g. =?UTF-8?Q?Caf=C3=A9?= or =?utf-8?B?Q2Fmw6k=?= */
+function decodeWords(text) {
+  return String(text || "")
+    .replace(/(=\?[^?\s]+\?[BbQq]\?[^?\s]*\?=)\s+(?==\?)/g, "$1")   // spaces between encoded words don't count
+    .replace(/=\?([^?\s]+)\?([BbQq])\?([^?\s]*)\?=/g, (whole, charset, enc, data) => {
+      try {
+        let bytes;
+        if (enc.toUpperCase() === "B") {
+          bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+        } else {
+          const t = data.replace(/_/g, " "), out = [];
+          for (let i = 0; i < t.length; i++) {
+            if (t[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(t.slice(i + 1, i + 3))) { out.push(parseInt(t.slice(i + 1, i + 3), 16)); i += 2; }
+            else out.push(t.charCodeAt(i) & 0xff);
+          }
+          bytes = Uint8Array.from(out);
+        }
+        try { return new TextDecoder(charset.split("*")[0]).decode(bytes); }
+        catch { return new TextDecoder("utf-8").decode(bytes); }
+      } catch { return whole; }
+    });
+}
+
+/** Split pasted text into header blocks and pick the one that is really the headers. */
+function parseHeaderBlock(raw) {
+  const blocks = String(raw).replace(/\r\n?/g, "\n").split(/\n[ \t]*\n/);
+  const parsed = blocks.map((block) => {
+    const headers = [];
+    block.split("\n").forEach((line) => {
+      if (!line.trim()) return;
+      if (/^[ \t]/.test(line)) { if (headers.length) headers[headers.length - 1].value += " " + line.trim(); return; }
+      const m = line.match(/^([!-9;-~]+):[ \t]?(.*)$/);
+      if (m) headers.push({ name: m[1], key: m[1].toLowerCase(), value: m[2].trim() });
+      else if (headers.length) headers[headers.length - 1].value += " " + line.trim();  // a line broken by copy and paste
+    });
+    return headers;
+  });
+  // Gmail's "Show original" puts a summary table first; prefer the block that has real transport headers.
+  const KEY = /^(received|authentication-results|dkim-signature|return-path|message-id)$/;
+  return parsed.find((h) => h.some((x) => KEY.test(x.key))) || parsed.find((h) => h.length) || [];
+}
+
+const addrOf = (v) => {
+  const m = String(v || "").match(/<([^<>\s]+@[^<>\s]+)>/) || String(v || "").match(/([^\s<>"(),;:]+@[^\s<>"(),;:]+)/);
+  return m ? m[1].replace(/^mailto:/i, "").toLowerCase() : null;
+};
+const domainOf = (addr) => (addr && addr.includes("@") ? addr.split("@").pop().replace(/[.>\]]+$/, "").toLowerCase() : null);
+const displayNameOf = (v) => (String(v || "").match(/^\s*"?([^"<]*?)"?\s*</) || [])[1]?.trim() || "";
+/** Registrable domain, approximately (mail.shop.co.uk -> shop.co.uk). Good enough to compare senders. */
+function orgDomain(d) {
+  if (!d) return null;
+  const p = d.toLowerCase().replace(/\.$/, "").split(".");
+  if (p.length <= 2) return p.join(".");
+  const sld = p[p.length - 2], tld = p[p.length - 1];
+  const n = tld.length === 2 && /^(co|com|net|org|gov|ac|edu|ne|or|go|gob|nic|ltd|plc|biz)$/.test(sld) ? 3 : 2;
+  return p.slice(-n).join(".");
+}
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  if (ip.includes(":")) return /^(::1$|::$|f[cd]|fe[89ab]|2002:)/i.test(ip);
+  const [a, b] = ip.split(".").map(Number);
+  return a === 10 || a === 127 || a === 0 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) ||
+         (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+}
+const isExampleIp = (ip) => /^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)|^2001:db8:/i.test(ip || "");
+
+function parseReceived(value) {
+  const semi = value.lastIndexOf(";");
+  const main = semi >= 0 ? value.slice(0, semi) : value;
+  const dateText = semi >= 0 ? value.slice(semi + 1).replace(/\([^)]*\)/g, "").trim() : "";
+  const time = Date.parse(dateText);
+  const word = (re) => (main.match(re) || [])[1] || null;
+  const fromClause = (main.match(/\bfrom\s+([\s\S]*?)(?=\sby\s|$)/i) || [])[1] || "";
+  const ips = [...fromClause.matchAll(/\[(?:IPv6:)?([0-9a-fA-F:.]{3,})\]/g)].map((m) => m[1]);
+  if (!ips.length) { const v4 = fromClause.match(/\b((?:\d{1,3}\.){3}\d{1,3})\b/); if (v4) ips.push(v4[1]); }
+  const from = word(/\bfrom\s+([^\s;()]+)/i);
+  const proto = word(/\bwith\s+([A-Za-z0-9_-]+)/i);
+  const tls = /^(ESMTPS|ESMTPSA|LMTPS|UTF8SMTPS|UTF8SMTPSA|HTTPS)$/i.test(proto || "") || /version=TLS|using TLS|TLS1_[0-3]|TLSv1|cipher=/i.test(main);
+  const encrypted = tls ? true : (from && /^(E?SMTPA?|UTF8SMTPA?|LMTP)$/i.test(proto || "")) ? false : null;
+  return { raw: value, from, by: word(/\bby\s+([^\s;()]+)/i), proto, ip: ips[0] || null, time: Number.isNaN(time) ? null : time, encrypted };
+}
+
+function parseAuthResults(value) {
+  const parts = value.split(";").map((p) => p.trim()).filter(Boolean);
+  const server = parts.length && !/^[a-z][a-z0-9-]*\s*=/i.test(parts[0]) ? parts.shift() : null;
+  const methods = [];
+  parts.forEach((p) => {
+    const m = p.match(/^([a-z][a-z0-9-]*)\s*=\s*([a-z]+)/i);
+    if (!m) return;
+    const props = {};
+    for (const pm of p.matchAll(/\b([a-z]+\.[a-z0-9-]+)\s*=\s*("[^"]*"|[^\s;()]+)/gi)) props[pm[1].toLowerCase()] = pm[2].replace(/"/g, "");
+    methods.push({ method: m[1].toLowerCase(), result: m[2].toLowerCase(), props, comment: (p.match(/\(([^)]*)\)/) || [])[1] || "", raw: p });
+  });
+  return { server, methods };
+}
+function tagList(value) {
+  const tags = {};
+  String(value).split(";").forEach((kv) => { const i = kv.indexOf("="); if (i > 0) tags[kv.slice(0, i).trim().toLowerCase()] = kv.slice(i + 1).replace(/\s+/g, ""); });
+  return tags;
+}
+function fmtDuration(ms) {
+  const s = Math.round(Math.abs(ms) / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return `${h} h${m ? ` ${m} min` : ""}`;
+}
+
+const SCL_MEANING = (n) => n < 0 ? "skipped spam filtering (trusted or internal sender)" : n <= 4 ? "not spam" : n <= 8 ? "spam: delivered to Junk" : "high-confidence spam";
+const BCL_MEANING = (n) => n === 0 ? "not bulk mail" : n <= 3 ? "bulk mail with few complaints" : n <= 7 ? "bulk mail with some complaints" : "bulk mail with many complaints";
+const SFV_MEANING = { SPM: "spam", NSPM: "not spam", SKN: "skipped: sender on a safe list", SKA: "skipped: allowed by an admin rule", SKB: "blocked: sender on a block list", SKS: "spam: marked by a transport rule", BLK: "blocked by the user's blocked senders", SKQ: "released from quarantine", SKI: "skipped: internal message" };
+
+function analyzeHeaders(headers) {
+  const get = (k) => headers.find((h) => h.key === k)?.value ?? null;
+  const all = (k) => headers.filter((h) => h.key === k).map((h) => h.value);
+  const findings = [];
+  const say = (level, text) => findings.push({ level, text });
+
+  const fromRaw = decodeWords(get("from"));
+  const fromAddr = addrOf(fromRaw), fromDomain = domainOf(fromAddr);
+  const replyAddr = addrOf(decodeWords(get("reply-to"))), returnAddr = addrOf(get("return-path"));
+  const msg = {
+    from: fromRaw, fromAddr, fromDomain, replyTo: decodeWords(get("reply-to")), replyAddr,
+    to: decodeWords(get("to")), cc: decodeWords(get("cc")), subject: decodeWords(get("subject")),
+    date: get("date"), messageId: get("message-id"), returnPath: returnAddr,
+    mailer: get("x-mailer") || get("user-agent"), listUnsub: get("list-unsubscribe"),
+  };
+
+  // ---- Delivery path: Received headers are added at the top, so reverse for oldest first
+  const hops = all("received").map(parseReceived).reverse();
+  hops.forEach((h, i) => { const prev = hops[i - 1]; h.delay = prev && prev.time != null && h.time != null ? h.time - prev.time : null; });
+  const timed = hops.filter((h) => h.time != null);
+  const transit = timed.length > 1 ? timed[timed.length - 1].time - timed[0].time : null;
+
+  // ---- Authentication results recorded by the receiving server (the topmost header is the one to trust)
+  const arAll = all("authentication-results");
+  const ar = arAll.length ? parseAuthResults(arAll[0]) : { server: null, methods: [] };
+  const method = (name) => ar.methods.filter((m) => m.method === name);
+  const spfAR = method("spf")[0], dmarcAR = method("dmarc")[0], dkimAR = method("dkim"), arcAR = method("arc")[0], compauth = method("compauth")[0];
+  const rspf = get("received-spf");
+  const spf = spfAR ? { result: spfAR.result, domain: domainOf(spfAR.props["smtp.mailfrom"]) || spfAR.props["smtp.mailfrom"] || domainOf(returnAddr), comment: spfAR.comment }
+            : rspf ? { result: (rspf.match(/^\s*(\w+)/) || [])[1]?.toLowerCase(), domain: domainOf((rspf.match(/envelope-from=<?([^>;\s]+)/i) || [])[1]) || domainOf(returnAddr), comment: rspf }
+            : null;
+  const dkimSigs = all("dkim-signature").map(tagList).map((t) => ({ d: (t.d || "").toLowerCase(), s: t.s || "", a: t.a || "" }));
+  const dkim = dkimAR.map((m) => ({ result: m.result, d: (m.props["header.d"] || domainOf(m.props["header.i"]) || "").toLowerCase().replace(/^none$/, ""), s: m.props["header.s"] || "" }));
+  const dmarcPolicy = (dmarcAR?.comment.match(/\bp=(\w+)/i) || [])[1]?.toLowerCase() || null;
+  const dmarc = dmarcAR ? { result: dmarcAR.result, from: dmarcAR.props["header.from"] || fromDomain, policy: dmarcPolicy, action: dmarcAR.props.action || (dmarcAR.raw.match(/action=(\w+)/i) || [])[1] } : null;
+
+  // ---- The IP that handed the message to the receiving organisation
+  const ipFromText = (t) => (String(t || "").match(/client-ip=([0-9a-fA-F:.]+)/i) || String(t || "").match(/sender IP is ([0-9a-fA-F:.]+)/i) ||
+                             String(t || "").match(/designates ([0-9a-fA-F:.]+) as permitted/i) || [])[1];
+  let senderIp = ipFromText(rspf) || ipFromText(spfAR?.raw) || spfAR?.props["smtp.remote-ip"] || null;
+  let senderHop = null;
+  for (const h of [...hops].reverse()) { if (h.ip && !isPrivateIp(h.ip)) { senderHop = h; break; } }
+  if (!senderIp && senderHop) senderIp = senderHop.ip;
+  if (senderIp) senderHop = [...hops].reverse().find((h) => h.ip === senderIp) || senderHop;
+
+  // ---- Spam filter verdicts
+  const spam = [];
+  const xs = get("x-spam-status");
+  if (xs) {
+    const yes = /^\s*yes/i.test(xs), score = (xs.match(/score=(-?[\d.]+)/i) || [])[1], req = (xs.match(/required=(-?[\d.]+)/i) || [])[1];
+    spam.push({ name: "SpamAssassin", value: `${yes ? "Spam" : "Not spam"}${score ? `, score ${score}${req ? ` (spam from ${req})` : ""}` : ""}`, bad: yes });
+  } else if (/^\s*yes/i.test(get("x-spam-flag") || "")) spam.push({ name: "Spam filter", value: "Flagged as spam (X-Spam-Flag)", bad: true });
+  const fo = get("x-forefront-antispam-report") || "";
+  const scl = get("x-ms-exchange-organization-scl") ?? (fo.match(/\bSCL:(-?\d+)/) || [])[1];
+  if (scl != null && scl !== "") spam.push({ name: "Microsoft spam confidence (SCL)", value: `${scl}: ${SCL_MEANING(Number(scl))}`, bad: Number(scl) >= 5 });
+  const sfv = (fo.match(/\bSFV:(\w+)/) || [])[1];
+  if (sfv) spam.push({ name: "Microsoft filter verdict (SFV)", value: `${sfv}: ${SFV_MEANING[sfv] || "see Microsoft's documentation"}`, bad: /^(SPM|SKS|SKB|BLK)$/.test(sfv) });
+  const bcl = ((get("x-microsoft-antispam") || "").match(/\bBCL:(\d+)/) || [])[1];
+  if (bcl != null) spam.push({ name: "Microsoft bulk complaint level (BCL)", value: `${bcl}: ${BCL_MEANING(Number(bcl))}`, bad: Number(bcl) >= 8 });
+  if (compauth) {
+    const reason = (compauth.raw.match(/reason=(\d+)/) || [])[1];
+    spam.push({ name: "Microsoft composite authentication", value: `${compauth.result}${reason ? ` (reason ${reason})` : ""}`, bad: compauth.result === "fail" });
+  }
+
+  // ---- Findings, worst first later
+  if (!headers.length) return { empty: true };
+  if (!fromRaw) say("warn", "There’s no From header. Check that you pasted the message headers, not just part of them.");
+  if (!hops.length) say("info", "There are no Received headers, so the delivery path can’t be traced. These may be the headers of a draft, or the paste may be incomplete.");
+  if (!arAll.length && !rspf) say("info", "The receiving server didn’t record SPF, DKIM or DMARC results here (no Authentication-Results header), so only the signatures themselves are shown.");
+
+  if (dmarc) {
+    if (dmarc.result === "pass") say("pass", `Passed DMARC: the message really comes from ${dmarc.from}.`);
+    else if (dmarc.result === "fail") say("fail", `Failed DMARC: nothing proves this message comes from ${dmarc.from}. It may be spoofed, or the sender’s setup is wrong.${dmarc.policy ? ` The domain’s policy is p=${dmarc.policy}.` : ""}`);
+    else if (dmarc.result === "none") say("warn", `${dmarc.from} has no DMARC policy, so receivers can’t tell genuine mail from forgeries.`);
+    if (dmarc.result === "pass" && dmarc.policy === "none") say("info", `${dmarc.from}’s DMARC policy is monitor-only (p=none): forgeries of this domain would still be delivered.`);
+  }
+  if (spf && /^(fail|softfail)$/.test(spf.result)) {
+    if (dmarc?.result === "pass") say("info", `SPF didn’t pass (${spf.result}), but DKIM did, so DMARC still passed. This is normal for forwarded mail and mailing lists.`);
+    else say("warn", `SPF ${spf.result}: the sending server${senderIp ? ` (${senderIp})` : ""} isn’t on ${spf.domain || "the sender"}’s list of allowed servers.`);
+  }
+  if (spf?.result === "permerror") say("warn", `${spf.domain || "The sender"}’s SPF record is broken (permerror), for example too many DNS lookups.`);
+  dkim.filter((k) => k.result === "fail").forEach((k) => say("warn", `A DKIM signature from ${k.d || "the sender"} didn’t verify: the message was changed after it was signed, or the published key doesn’t match.`));
+  if (!dkimSigs.length && !dkim.length) say("warn", "The message isn’t DKIM-signed. Most legitimate bulk and business mail is.");
+
+  if (!dmarc && fromDomain) {
+    const org = orgDomain(fromDomain);
+    const dkimAligned = (dkim.length ? dkim.filter((k) => k.result === "pass").map((k) => k.d) : dkimSigs.map((s) => s.d)).some((d) => orgDomain(d) === org);
+    const spfAligned = spf?.result === "pass" && orgDomain(spf.domain) === org;
+    if (!dkimAligned && !spfAligned) say("warn", `Neither the DKIM signer nor the envelope sender matches the From domain (${fromDomain}), so this message couldn’t pass DMARC.`);
+  }
+  if (replyAddr && fromDomain && orgDomain(domainOf(replyAddr)) !== orgDomain(fromDomain))
+    say("warn", `Replies go to ${replyAddr}, a different domain from the sender (${fromDomain}). Some newsletters and help desks do this; it’s also a classic sign of phishing.`);
+  const shown = displayNameOf(fromRaw).toLowerCase().match(/[^\s<>"]+@[^\s<>"]+/);
+  if (shown && fromAddr && shown[0] !== fromAddr) say("fail", `The sender’s name shows “${shown[0]}”, but the real address is ${fromAddr}. This is a common spoofing trick.`);
+
+  const plain = hops.filter((h) => h.encrypted === false);
+  if (plain.length) say("warn", `${plain.length} hop${plain.length === 1 ? " wasn’t" : "s weren’t"} encrypted (${plain.map((h) => `${h.from} to ${h.by}`).join("; ")}). Inside one company’s network that can be fine; across the internet the message could be read in transit.`);
+  hops.filter((h) => h.delay != null && h.delay > 5 * 60000).forEach((h) => say("warn", `The message waited ${fmtDuration(h.delay)} before ${h.by || "a server"} received it. A queue or a greylisting retry usually causes this.`));
+  if (hops.some((h) => h.delay != null && h.delay < -60000)) say("info", "Some servers’ clocks disagree, so one or more delays look negative. The timings between those hops aren’t reliable.");
+  spam.filter((x) => x.bad).forEach((x) => say("warn", `${x.name}: ${x.value}.`));
+
+  return { msg, hops, transit, ar, arCount: arAll.length, arc: !!(arcAR || get("arc-authentication-results")), arcResult: arcAR?.result || null,
+           spf, dkim, dkimSigs, dmarc, senderIp, senderHop, spam, findings, total: headers.length, headers };
+}
+
+/* ---- Plain-English explanations ---- */
+function explainSpf(r, domain) {
+  const d = domain || "the sender’s domain";
+  return {
+    pass: `The server that sent it is on ${d}’s list of allowed senders.`,
+    fail: `The server that sent it is not allowed to send for ${d}, which asks receivers to reject such mail.`,
+    softfail: `The server that sent it isn’t on ${d}’s list; the domain says to treat such mail as suspicious.`,
+    neutral: `${d}’s SPF record makes no claim about this server.`,
+    none: `${d} has no SPF record.`,
+    temperror: "A temporary DNS problem stopped the check.",
+    permerror: `${d}’s SPF record is broken.`,
+  }[r] || `Result: ${r}.`;
+}
+function explainDkim(r, d) {
+  return {
+    pass: `Signed by ${d || "the sender"}, and the message wasn’t changed on the way.`,
+    fail: `The signature from ${d || "the sender"} didn’t verify.`,
+    none: "The message wasn’t signed.",
+    neutral: "The signature couldn’t be fully checked.",
+    policy: "The signature was valid but not accepted by the receiver’s policy (often a weak key).",
+    temperror: "A temporary DNS problem stopped the check.",
+    permerror: "The signature or the published key is broken.",
+  }[r] || `Result: ${r}.`;
+}
+function explainDmarc(r, from) {
+  return {
+    pass: `The From domain (${from}) is backed by a passing SPF or DKIM check from the same domain.`,
+    fail: `Neither SPF nor DKIM passed for the From domain (${from}).`,
+    none: `${from} has no DMARC record.`,
+    bestguesspass: `${from} has no DMARC record, but the message would have passed if it did.`,
+    temperror: "A temporary DNS problem stopped the check.",
+    permerror: `${from}’s DMARC record is broken.`,
+  }[r] || `Result: ${r}.`;
+}
+const RESULT_STATUS = (r) => r === "pass" ? "pass" : /^(fail|permerror|hardfail)$/.test(r) ? "fail" : r === "bestguesspass" ? "info" : "warn";
+function resultChip(label, result) {
+  const status = result ? RESULT_STATUS(result) : "info";
+  return add(el("span", `inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] ${st(status).pill}`),
+    el("span", "font-semibold", label), el("span", "", result || "not recorded"));
+}
+
+/* ---- Render ---- */
+function renderHeaderAnalysis(a) {
+  const out = $("hdr-result");
+  out.replaceChildren();
+  const m = a.msg;
+
+  // Summary sentence
+  const who = m.fromAddr ? `The message from ${m.fromAddr}` : "This message";
+  let auth;
+  if (a.dmarc?.result === "pass") auth = `passed DMARC, so it really comes from ${a.dmarc.from}`;
+  else if (a.dmarc?.result === "fail") auth = `failed DMARC: nothing proves it comes from ${a.dmarc.from}`;
+  else if (a.dkim.some((k) => k.result === "pass") || a.spf?.result === "pass") auth = "passed some authentication checks, but no DMARC result was recorded";
+  else if (a.dkim.length || a.spf) auth = "failed its authentication checks";
+  else auth = "has no recorded authentication results";
+  const route = a.hops.length
+    ? ` It passed through ${a.hops.length} server${a.hops.length === 1 ? "" : "s"}${a.transit != null && a.transit >= 0 ? ` in ${fmtDuration(a.transit)}` : ""}${a.hops.some((h) => h.encrypted === false) ? ", not all of it encrypted" : a.hops.some((h) => h.encrypted) ? ", encrypted where it crossed between servers" : ""}.`
+    : "";
+  const worst = a.findings.some((f) => f.level === "fail") ? "fail" : a.findings.some((f) => f.level === "warn") ? "warn" : "pass";
+  const { wrap: sum, body: sumBody } = section("hdr-summary", "What happened", worst, null);
+  add(sumBody,
+    el("p", "max-w-3xl text-[17px] font-semibold leading-snug text-navy", `${who} ${auth}.${route}`),
+    add(el("div", "flex flex-wrap gap-2"),
+      resultChip("SPF", a.spf?.result), resultChip("DKIM", a.dkim.length ? (a.dkim.some((k) => k.result === "pass") ? "pass" : a.dkim[0].result) : (a.dkimSigs.length ? "signed, not checked" : "none")),
+      resultChip("DMARC", a.dmarc?.result), a.arc ? resultChip("ARC", a.arcResult || "present") : null));
+  const order = { fail: 0, warn: 1, info: 2, pass: 3 };
+  const items = [...a.findings].sort((x, y) => order[x.level] - order[y.level]);
+  if (items.length) {
+    const list = el("ul", "space-y-2");
+    items.forEach((f) => add(list, add(el("li", "grid grid-cols-[auto_1fr] items-start gap-3 rounded-lg bg-white px-3 py-2.5 ring-1 ring-rule"),
+      pill(f.level), el("p", "min-w-0 break-anywhere text-[14px] leading-snug text-ink/80", f.text))));
+    add(sumBody, list);
+  }
+  sum.classList.add("bg-canvas/50");
+  add(out, fullRow(sum));
+
+  // Message details + sending server
+  const { wrap: det, body: detBody } = section("hdr-message", "The message", "info", m.subject || "(no subject)");
+  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const left = el("div", "min-w-0");
+  add(left,
+    row("From", m.from || "—"),
+    m.replyTo ? row("Reply-To", m.replyTo) : null,
+    row("To", m.to || "—"),
+    m.cc ? row("Cc", m.cc) : null,
+    row("Date", m.date || "—"),
+    row("Envelope sender", m.returnPath || "—", true),
+    row("Message-ID", m.messageId || "—", true),
+    m.mailer ? row("Sent with", m.mailer) : null,
+    m.listUnsub ? row("Unsubscribe link", "Present (one-click unsubscribe header)") : null);
+  const right = el("div", "min-w-0 space-y-3");
+  add(right, subheading("Sending server"));
+  if (a.senderIp) {
+    add(right, row("IP address", a.senderIp, true), a.senderHop?.from ? row("Called itself", a.senderHop.from, true) : null,
+                a.senderHop?.by ? row("Handed to", a.senderHop.by, true) : null);
+    const out2 = el("div");
+    const actions = el("div", "flex flex-wrap gap-2 pt-1");
+    if (a.senderIp.includes(":")) add(right, el("p", "text-[13px] text-ink/60", "It’s an IPv6 address; almost no blocklists cover IPv6."));
+    else if (isPrivateIp(a.senderIp) || isExampleIp(a.senderIp)) add(right, el("p", "text-[13px] text-ink/60", "It’s a private or example address, so there’s nothing to look up."));
+    else add(actions, actionButton("Check on blocklists", () => checkOneIp(a.senderIp, out2)));
+    if (m.fromDomain) add(actions, actionButton(`Check ${m.fromDomain}`, () => run(m.fromDomain)));
+    add(right, actions, out2);
+  } else {
+    add(right, el("p", "text-[14px] text-ink/70", "Couldn’t tell which server sent it: no public IP appears in the Received headers."));
+    if (m.fromDomain) add(right, add(el("div", "pt-1"), actionButton(`Check ${m.fromDomain}`, () => run(m.fromDomain))));
+  }
+  add(detBody, add(grid, left, right));
+  add(out, fullRow(det));
+
+  // Authentication
+  const authStatuses = [a.spf?.result, a.dmarc?.result, ...a.dkim.map((k) => k.result)].filter(Boolean).map(RESULT_STATUS);
+  const { wrap: au, body: auBody } = section("hdr-auth", "Authentication", authStatuses.length ? worstStatus(...authStatuses) : "info",
+    a.ar.server ? `As recorded by ${a.ar.server}` : a.arCount ? "As recorded by the receiving server" : "No results recorded by the receiving server");
+  const authRow = (label, result, text) => add(el("div", "grid gap-1 border-b border-rule/70 py-3 last:border-0 sm:grid-cols-[9rem_6.5rem_1fr] sm:gap-4"),
+    el("div", "font-semibold text-navy", label),
+    add(el("div", ""), el("span", `inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${st(result ? RESULT_STATUS(result) : "info").pill}`, result || "—")),
+    el("p", "min-w-0 break-anywhere text-[14px] leading-snug text-ink/80", text));
+  const authList = el("div");
+  add(authList, authRow("SPF", a.spf?.result, a.spf ? `${explainSpf(a.spf.result, a.spf.domain)}${a.spf.domain ? ` Checked for the envelope sender’s domain, ${a.spf.domain}.` : ""}` : "Not recorded."));
+  if (a.dkim.length) a.dkim.forEach((k) => add(authList, authRow(`DKIM${k.d ? ` (${k.d})` : ""}`, k.result, explainDkim(k.result, k.d))));
+  else add(authList, authRow("DKIM", a.dkimSigs.length ? null : "none", a.dkimSigs.length ? `Signed by ${a.dkimSigs.map((s) => s.d).join(", ")}; the receiver’s verdict isn’t in these headers.` : explainDkim("none")));
+  add(authList, authRow("DMARC", a.dmarc?.result, a.dmarc ? `${explainDmarc(a.dmarc.result, a.dmarc.from)}${a.dmarc.policy ? ` Policy: p=${a.dmarc.policy}.` : ""}${a.dmarc.action ? ` The receiver’s action: ${a.dmarc.action}.` : ""}` : "Not recorded."));
+  if (a.arc) add(authList, authRow("ARC", a.arcResult || "present", "The message passed through a forwarder or mailing list that recorded the original checks (ARC), so the final receiver can trust results from before the forward."));
+  add(auBody, authList);
+  if (a.arCount > 1) add(auBody, el("p", "text-[13px] text-ink/60", `${a.arCount - 1} more Authentication-Results header${a.arCount === 2 ? " was" : "s were"} added by earlier servers and ignored here: only the topmost one comes from the final receiver, and lower ones could be forged by the sender.`));
+
+  if (a.dkimSigs.length) {
+    const sigs = el("div", "space-y-2");
+    a.dkimSigs.forEach((s) => {
+      const res = el("div", "text-[13px]");
+      const line = add(el("div", "flex flex-wrap items-center gap-x-3 gap-y-1"),
+        el("span", "font-mono text-[13px] text-navy", `d=${s.d}  s=${s.s}${s.a ? `  a=${s.a}` : ""}`));
+      if (s.d && s.s && /^[a-z0-9._-]+$/i.test(s.s)) add(line, actionButton("Look up this key", async () => {
+        res.replaceChildren(el("p", "text-ink/60", `Looking up ${s.s}._domainkey.${s.d}…`));
+        try {
+          const r = await fetch(`${API_BASE}/api/v1/dkim?domain=${encodeURIComponent(s.d)}&selector=${encodeURIComponent(s.s)}`);
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Lookup failed (HTTP ${r.status}).`);
+          res.replaceChildren(data.found ? add(el("div", "mt-1"), row(data.key.selector, dkimKeyLine(data.key)), el("p", "mt-1 text-ink/70", data.key.note))
+                                         : el("p", "text-warn", `No key is published at ${s.s}._domainkey.${s.d}, so this signature can’t be verified any more.`));
+        } catch (err) { res.replaceChildren(el("p", "text-fail", err instanceof TypeError ? "Couldn't reach the VdigDNS service." : err.message)); }
+      }));
+      add(sigs, add(el("div", ""), line, res));
+    });
+    add(auBody, add(el("div", "space-y-2 border-t border-rule pt-4"), subheading(`DKIM signatures in the message (${a.dkimSigs.length})`), sigs));
+  }
+  add(out, fullRow(au));
+
+  // Spam filters
+  if (a.spam.length) {
+    const { wrap: sp, body: spBody } = section("hdr-spam", "Spam filter verdicts", a.spam.some((x) => x.bad) ? "warn" : "pass", null);
+    add(spBody, add(el("div"), a.spam.map((x) => row(x.name, x.value))));
+    add(out, fullRow(sp));
+  }
+
+  // Delivery path
+  if (a.hops.length) {
+    const { wrap: dp, body: dpBody } = section("hdr-path", "Delivery path", a.hops.some((h) => h.encrypted === false || (h.delay ?? 0) > 300000) ? "warn" : "pass",
+      `${a.hops.length} hop${a.hops.length === 1 ? "" : "s"}, oldest first${a.transit != null && a.transit >= 0 ? `, ${fmtDuration(a.transit)} in total` : ""}`);
+    const ol = el("ol", "space-y-0");
+    a.hops.forEach((h, i) => {
+      const enc = h.encrypted === true ? ["text-pass", "Encrypted"] : h.encrypted === false ? ["text-warn", "Not encrypted"] : ["text-ink/50", "Internal"];
+      const delay = h.delay == null ? "" : h.delay < 0 ? "clock difference" : `+${fmtDuration(h.delay)}`;
+      const slow = (h.delay ?? 0) > 300000;
+      add(ol, add(el("li", "grid grid-cols-[2rem_1fr] gap-3 border-b border-rule/70 py-3 last:border-0"),
+        el("span", "tabular pt-0.5 font-mono text-[13px] font-semibold text-ink/50", String(i + 1)),
+        add(el("div", "min-w-0 space-y-1"),
+          add(el("div", "break-anywhere text-[14px]"),
+            el("span", "font-mono text-[13px] text-ink/70", h.from ? `${h.from}${h.ip ? ` [${h.ip}]` : ""}` : "(passed on internally)"),
+            el("span", "px-2 text-ink/40", "to"),
+            el("span", "font-mono text-[13px] font-semibold text-navy", h.by || "unknown server")),
+          add(el("div", "flex flex-wrap gap-x-4 gap-y-0.5 text-[12px]"),
+            el("span", `font-semibold ${enc[0]}`, enc[1]),
+            h.proto ? el("span", "font-mono text-ink/60", h.proto) : null,
+            h.time != null ? el("span", "text-ink/60", new Date(h.time).toUTCString().replace(" GMT", " UTC")) : null,
+            delay ? el("span", `tabular font-semibold ${slow ? "text-warn" : "text-ink/70"}`, delay) : null))));
+    });
+    add(dpBody, ol);
+    add(out, fullRow(dp));
+  }
+
+  // Raw headers
+  const details = el("details", "border-t border-rule px-6 py-5 sm:px-8");
+  add(details, el("summary", "cursor-pointer select-none text-sm font-semibold text-blue hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", `Show all headers as parsed (${a.total})`),
+    add(el("div", "mt-3"), recordBlock(a.headers.map((h) => `${h.name}: ${h.value}`).join("\n"))));
+  add(out, details);
+}
+
+function runHeaderAnalysis() {
+  const err = $("hdr-error");
+  err.classList.add("hidden");
+  const raw = $("hdr-input").value;
+  if (!raw.trim()) { err.textContent = "Paste a message’s headers first."; err.classList.remove("hidden"); return; }
+  const headers = parseHeaderBlock(raw);
+  const usable = headers.some((h) => /^(from|received|subject|date|message-id|authentication-results|to)$/.test(h.key));
+  if (!usable) {
+    $("hdr-result").replaceChildren();
+    err.textContent = "That doesn’t look like email headers. Copy the full original message (see “Where do I find them?”).";
+    err.classList.remove("hidden");
+    return;
+  }
+  renderHeaderAnalysis(analyzeHeaders(headers));
+  $("hdr-result").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+}
+
+/* Fictional sample (.example domains and documentation IPs are reserved and never real). */
+const SAMPLE_HEADERS = `Delivered-To: priya@contoso.example
+Received: by 2002:a05:7300:5c11:b0:12a:9f31:1234 with SMTP id k17csp512345dyb;
+        Wed, 4 Nov 2026 01:12:09 -0800 (PST)
+ARC-Authentication-Results: i=1; mx.google.com;
+       dkim=pass header.i=@northwind.example header.s=s1 header.b=Xk3pQ9aB
+Return-Path: <bounce-7731@em.northwind.example>
+Received: from o1.em.northwind.example (o1.em.northwind.example. [198.51.100.40])
+        by mx.google.com with ESMTPS id a12si1234567qkb.512.2026.11.04.01.12.08
+        for <priya@contoso.example>
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Wed, 04 Nov 2026 01:12:08 -0800 (PST)
+Received-SPF: pass (google.com: domain of bounce-7731@em.northwind.example designates 198.51.100.40 as permitted sender) client-ip=198.51.100.40;
+Authentication-Results: mx.google.com;
+       dkim=pass header.i=@northwind.example header.s=s1 header.b=Xk3pQ9aB;
+       spf=pass (google.com: domain of bounce-7731@em.northwind.example designates 198.51.100.40 as permitted sender) smtp.mailfrom=bounce-7731@em.northwind.example;
+       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=northwind.example
+Received: from mta-relay.northwind.example (unknown [203.0.113.77])
+        by o1.em.northwind.example (Postfix) with ESMTP id 4Rk2x91ZzQz9t1
+        for <priya@contoso.example>; Wed, 04 Nov 2026 09:05:51 +0000 (UTC)
+Received: from app01.internal.northwind.example ([10.20.0.15])
+        by mta-relay.northwind.example with ESMTPSA id 3f9c2a
+        (version=TLS1_2 cipher=ECDHE-RSA-AES128-GCM-SHA256);
+        Wed, 04 Nov 2026 09:05:49 +0000
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=northwind.example; s=s1;
+        h=from:to:subject:date:message-id; bh=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=;
+        b=Xk3pQ9aBexampleexampleexample
+From: "Northwind Traders" <orders@northwind.example>
+Reply-To: support@northwind-help.example
+To: priya@contoso.example
+Subject: =?UTF-8?Q?Your_order_=E2=84=96_48213_has_shipped?=
+Date: Wed, 04 Nov 2026 09:05:48 +0000
+Message-ID: <20261104090548.48213@northwind.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+X-Mailer: Northwind Shop 4.2
+List-Unsubscribe: <mailto:unsub@em.northwind.example>
+
+<html><body>Your order is on its way.</body></html>`;
+
+/* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder" };
+const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer" };
 function showView(name) {
-  ["report", "prop", "spf", "dmarc"].forEach((v) => {
+  ["report", "prop", "spf", "dmarc", "headers"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -1694,13 +2301,13 @@ const SAMPLE = {
   dns: { status: "pass", errors: [], warnings: [], records: {
     A: { records: ["203.0.113.24"] }, AAAA: { records: ["2001:db8:85a3::24"] },
     MX: { records: [{ preference: 1, exchange: "aspmx.l.google.com" }, { preference: 5, exchange: "alt1.aspmx.l.google.com" }] },
-    TXT: { records: ["v=spf1 include:_spf.google.com include:sendgrid.net ~all", "site-verification=Yp3kQ81vZ"] },
+    TXT: { records: ["v=spf1 ip4:198.51.100.40 include:_spf.google.com include:sendgrid.net ~all", "site-verification=Yp3kQ81vZ"] },
     CNAME: { records: [] }, NS: { records: ["ns1.dnshost.example", "ns2.dnshost.example"] },
     SOA: { records: [{ mname: "ns1.dnshost.example", rname: "hostmaster.northwind.example", serial: 2026110401, refresh: 7200, retry: 3600, expire: 1209600, minimum: 3600 }] },
     CAA: { records: [{ flags: 0, tag: "issue", value: "letsencrypt.org" }, { flags: 0, tag: "iodef", value: "mailto:security@northwind.example" }] },
     SRV: { records: [{ name: "_autodiscover._tcp.northwind.example", priority: 0, weight: 0, port: 443, target: "mail.northwind.example" }] },
   } },
-  spf: { status: "pass", found: true, record: "v=spf1 include:_spf.google.com include:sendgrid.net ~all",
+  spf: { status: "pass", found: true, record: "v=spf1 ip4:198.51.100.40 include:_spf.google.com include:sendgrid.net ~all",
     lookup_count: 5, lookup_limit: 10, void_lookups: 0, all_qualifier: "~",
     includes: [{ via: "include", domain: "_spf.google.com", depth: 1, record: "v=spf1 …" },
                { via: "include", domain: "_netblocks.google.com", depth: 2, record: "v=spf1 …" },
@@ -1719,6 +2326,15 @@ const SAMPLE = {
     mx: [{ preference: 1, host: "aspmx.l.google.com", ips: ["142.250.141.26"] }, { preference: 5, host: "alt1.aspmx.l.google.com", ips: ["142.250.115.27"] }],
     rdns: [{ ip: "142.250.141.26", ptr: ["mx-in-f26.1e100.net"], forward_confirmed: true }, { ip: "142.250.115.27", ptr: ["rq-in-f27.1e100.net"], forward_confirmed: true }],
     smtp: { host: "aspmx.l.google.com", skipped: true, disabled: true }, errors: [], warnings: [], notes: [] },
+  blocklists: { status: "warn", domain: "northwind.example", spamhaus_url: "https://check.spamhaus.org/",
+    errors: [], warnings: ["198.51.100.40 (Sending server (SPF)) is listed on UCEPROTECT Level 1. One listing can hurt delivery to some receivers. Check why, then request removal."],
+    notes: ["Spamhaus isn't checked here: it refuses automated lookups from cloud platforms like the one VdigDNS runs on. Check it by hand with Spamhaus's own free checker."],
+    ips: [
+      { ip: "198.51.100.40", roles: ["Sending server (SPF)"], lists: [["SpamCop","clean"],["Mailspike","clean"],["PSBL","clean"],["UCEPROTECT Level 1","listed"],["SpamRATS","clean"],["DroneBL","clean"]].map(([list, state]) => ({ list, state, url: "https://www.uceprotect.net/", reason: state === "listed" ? "Net 198.51.100.0/24 is UCEPROTECT-Level1 listed because of spam from this IP" : null })) },
+      { ip: "142.250.141.26", roles: ["Mail server (MX)"], lists: ["SpamCop","Mailspike","PSBL","UCEPROTECT Level 1","SpamRATS","DroneBL"].map((list) => ({ list, state: "clean" })) },
+      { ip: "203.0.113.24", roles: ["Website"], lists: ["SpamCop","Mailspike","PSBL","UCEPROTECT Level 1","SpamRATS","DroneBL"].map((list) => ({ list, state: list === "SpamRATS" ? "unavailable" : "clean" })) },
+    ],
+    domain_lists: [{ list: "SURBL", state: "clean" }, { list: "URIBL", state: "clean" }] },
   tls: { status: "pass", ip: "203.0.113.24", verified: true, subject_cn: "northwind.example", issuer_org: "Let's Encrypt", issuer_cn: "R11",
     not_before: "2026-09-12T00:00:00+00:00", not_after: "2026-12-11T00:00:00+00:00", days_remaining: 37,
     sans: ["northwind.example", "www.northwind.example"], tls_version: "TLSv1.3", cipher: "TLS_AES_256_GCM_SHA384", errors: [], warnings: [],
@@ -1807,6 +2423,10 @@ $("spf-copy").addEventListener("click", () => copyText($("spf-output").textConte
 $("dmarc-form").addEventListener("input", updateDmarc);
 $("dmarc-form").addEventListener("submit", (e) => e.preventDefault());
 $("dmarc-copy").addEventListener("click", () => copyText($("dmarc-output").textContent, $("dmarc-copy"), $("dmarc-output")));
+
+$("hdr-form").addEventListener("submit", (e) => { e.preventDefault(); runHeaderAnalysis(); });
+$("hdr-sample").addEventListener("click", () => { $("hdr-input").value = SAMPLE_HEADERS; runHeaderAnalysis(); });
+$("hdr-clear").addEventListener("click", () => { $("hdr-input").value = ""; $("hdr-result").replaceChildren(); $("hdr-error").classList.add("hidden"); $("hdr-input").focus(); });
 
 $("search-form").addEventListener("submit", (e) => { e.preventDefault(); run($("domain-input").value); });
 $("home-link").addEventListener("click", goHome);
