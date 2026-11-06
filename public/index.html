@@ -77,7 +77,7 @@
           <a href="#propagation" data-nav="prop" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
           <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
-          <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Header analyzer</a>
+          <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Headers &amp; bounces</a>
         </nav>
       </div>
 
@@ -132,8 +132,8 @@
 
       <!-- Header block: email header analyzer -->
       <div id="head-headers" hidden>
-        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Read an email’s headers</h1>
-        <p class="mt-3 max-w-2xl text-white/80">Paste the full headers of a message to see who really sent it, whether it passed SPF, DKIM and DMARC, and where it was delayed. It’s all worked out in your browser: the headers aren’t sent anywhere.</p>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Explain an email’s headers or a bounce</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Paste a message’s headers to see who really sent it, whether it passed SPF, DKIM and DMARC, and where it was delayed. Or paste a bounce (“Undelivered Mail Returned to Sender”) to find out why it failed and how to fix it. It’s all worked out in your browser: nothing you paste is sent anywhere.</p>
       </div>
 
       <!-- Header block: DMARC builder -->
@@ -360,7 +360,7 @@
     <article class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]">
       <form id="hdr-form" class="space-y-3 p-6 sm:p-8" autocomplete="off">
         <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <label for="hdr-input" class="semi-wide text-lg font-bold text-navy">Message headers</label>
+          <label for="hdr-input" class="semi-wide text-lg font-bold text-navy">Headers or bounce message</label>
           <details class="text-[13px] text-ink/70">
             <summary class="cursor-pointer text-blue hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Where do I find them?</summary>
             <ul class="mt-2 max-w-md space-y-1">
@@ -376,9 +376,10 @@
                   class="w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-[13px] leading-relaxed text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20"></textarea>
         <div class="flex flex-wrap items-center gap-3">
           <button type="submit" class="rounded-lg bg-navy px-6 py-2.5 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Analyze headers</button>
-          <button type="button" id="hdr-sample" class="rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Try a sample</button>
+          <button type="button" id="hdr-sample" class="rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample headers</button>
+          <button type="button" id="hdr-sample-bounce" class="rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample bounce</button>
           <button type="button" id="hdr-clear" class="text-sm text-ink/60 underline underline-offset-4 hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Clear</button>
-          <span class="text-[13px] text-ink/60">The whole message source works too; the body is ignored.</span>
+          <span class="text-[13px] text-ink/60">For a bounce, paste the whole message you got back.</span>
         </div>
         <p id="hdr-error" role="alert" class="hidden text-[14px] text-fail"></p>
       </form>
@@ -2137,16 +2138,385 @@ function renderHeaderAnalysis(a) {
   add(out, details);
 }
 
+/* =====================================================================
+   BOUNCE (NON-DELIVERY REPORT) ANALYZER — also browser-only
+   Understands Exim, Postfix, Sendmail, qmail, Gmail, Microsoft 365/Exchange
+   and standard RFC 3464 delivery-status reports.
+   ===================================================================== */
+const BOUNCE_MARKERS = /mail delivery (software|subsystem|system|failed)|undeliver(ed|able)|delivery status notification|could not be delivered|couldn[’']?t be delivered|wasn[’']?t delivered|delivery has failed|final-recipient:|diagnostic-code:|returned mail|failure notice|this is the mail system at|permanent (fatal )?error|delivery (incomplete|delayed|failure)|message not delivered|remote server returned|smtp error from remote|has not yet been delivered|address not found|message blocked/i;
+const isBounceText = (t) => BOUNCE_MARKERS.test(t);
+
+// Where the returned copy of the original message starts (everything after it is the old message, not the report)
+const ORIGINAL_COPY = /^[ \t-]*(this is a copy of the message|original message|the header of the original message|below this line is a copy|original message headers:|------ the original message|----- original message)/im;
+
+const MAIL_FILTERS = [
+  [/antispamcloud\.com$/i, "SpamExperts (N-able Mail Assure), a spam filter many hosting companies run in front of their mail servers"],
+  [/mimecast\.com$/i, "Mimecast"], [/pphosted\.com$/i, "Proofpoint"], [/messagelabs\.com$/i, "Broadcom (Symantec) Email Security"],
+  [/barracudanetworks\.com$/i, "Barracuda"], [/iphmx\.com$/i, "Cisco Secure Email"], [/mailcontrol\.com$/i, "Forcepoint"],
+  [/protection\.outlook\.com$/i, "Microsoft 365"], [/(outlook|hotmail)\.com$/i, "Outlook.com"], [/(google|googlemail)\.com$/i, "Google (Gmail or Workspace)"],
+  [/(yahoodns\.net|yahoo\.com)$/i, "Yahoo"], [/zoho\.(com|in|eu)$/i, "Zoho Mail"], [/secureserver\.net$/i, "GoDaddy"], [/titan\.email$/i, "Titan"],
+  [/sophos\.com$/i, "Sophos"], [/trendmicro\.(com|eu)$/i, "Trend Micro"],
+];
+const filterName = (host) => (MAIL_FILTERS.find(([re]) => re.test(host || "")) || [])[1] || null;
+
+const BASIC_CODES = {
+  421: "Server not available right now, try again later", 450: "Mailbox temporarily unavailable", 451: "Server error, try again later",
+  452: "Not enough storage, try again later", 454: "Temporary authentication or TLS problem", 550: "Rejected: mailbox unavailable or refused by policy",
+  551: "User not local", 552: "Message or mailbox too large", 553: "Address not allowed", 554: "Transaction failed (rejected)",
+  530: "Authentication required", 535: "Login failed", 541: "Rejected by the recipient's filter", 571: "Delivery not authorised",
+};
+const STATUS_DETAILS = {
+  "1.1": "the mailbox doesn't exist", "1.2": "the recipient's domain or mail server can't be found", "1.3": "the address is badly formed",
+  "1.6": "the mailbox has moved", "1.7": "your sender address is badly formed", "1.8": "your sender domain isn't valid", "1.10": "recipient not found (Microsoft)",
+  "2.0": "mailbox problem", "2.1": "the mailbox is disabled", "2.2": "the mailbox is full", "2.3": "the message is larger than the recipient accepts",
+  "3.4": "the message is too big for the server", "4.0": "routing problem", "4.1": "no answer from the recipient's server (or, at Microsoft, the address was refused)",
+  "4.4": "the recipient's domain can't be routed", "4.6": "a mail loop", "4.7": "delivery took too long and was given up",
+  "5.1": "the server didn't understand a command", "7.0": "security or policy problem", "7.1": "not authorised: refused by policy",
+  "7.10": "encryption (TLS) is required", "7.23": "SPF check failed", "7.25": "reverse DNS (PTR) check failed",
+  "7.26": "authentication failed (SPF, DKIM and DMARC)", "7.27": "the sender's domain doesn't accept mail (null MX)", "7.28": "too many messages: rate limited",
+  "7.57": "the client wasn't authenticated", "7.606": "the sending IP is banned (Microsoft)", "7.708": "traffic from this IP isn't accepted (Microsoft)",
+};
+const STATUS_SUBJECT = { 0: "other", 1: "address", 2: "mailbox", 3: "mail system", 4: "network or routing", 5: "protocol", 6: "message content", 7: "security or policy" };
+function explainStatus(status) {
+  if (!status) return null;
+  const [cls, subj, det] = status.split(".");
+  const kind = cls === "5" ? "permanent" : cls === "4" ? "temporary" : "success";
+  return `${status}: ${kind} ${STATUS_SUBJECT[subj] || ""} problem${STATUS_DETAILS[`${subj}.${det}`] ? `, ${STATUS_DETAILS[`${subj}.${det}`]}` : ""}.`.replace(" problem, ", " problem: ");
+}
+const STAGE_TEXT = {
+  connect: "as soon as your server connected, so the server refused your server’s IP, not this message",
+  helo: "when your server introduced itself (HELO), so its name or IP was refused",
+  mail: "when your server named the sender, so your sender address or domain was refused",
+  rcpt: "when your server named the recipient, so the address itself was refused",
+  data: "after the whole message was sent, so the server judged the message itself, or your server’s reputation, not the address",
+};
+
+const BOUNCE_RULES = [
+  { id: "blocklist", who: "sender", title: "Your sending server’s IP is on a blocklist",
+    test: /blocked using|listed (at|on|in|by)|\b(spamhaus|spamcop|barracuda|sorbs|uceprotect|rbl|dnsbl|blacklist(ed)?|blocklist(ed)?)\b|banned sending ip|\bs3150\b|5\.7\.606|5\.7\.708|(poor|bad|low) (ip |sender )?reputation|ip reputation/i,
+    meaning: "The receiving server looked up the IP your mail came from on a public blocklist and refused it. Every message from that IP is affected, not just this one.",
+    fix: ["Find which list is named in the error and look up your IP on that list’s website to see why it was listed.",
+          "Fix the cause first: a hacked mailbox or website, an infected computer, or a bulk send to old addresses.",
+          "Then request removal. On shared hosting the IP is shared, so ask your host to delist it or move you to a clean IP."], tools: ["ip", "domain"] },
+  { id: "auth", who: "sender", title: "Your domain failed SPF, DKIM or DMARC",
+    test: /5\.7\.2[3-7]|dmarc|\bspf\b|\bdkim\b|unauthenticated|not authenticated|authentication (check )?fail/i,
+    meaning: "The receiver couldn’t confirm the message really came from your domain, so it refused it as a possible forgery.",
+    fix: ["Run a domain report on your domain and fix whatever SPF, DKIM or DMARC flags.",
+          "Make sure the server or service that sent this message is listed in your SPF record and signs with DKIM for your domain.",
+          "Gmail and Yahoo require SPF or DKIM on all mail, and SPF, DKIM and DMARC together for bulk senders."], tools: ["domain"] },
+  { id: "rdns", who: "sender", title: "Your sending server has no proper reverse DNS",
+    test: /5\.7\.25|reverse dns|\bptr\b|\brdns\b|reverse (lookup|hostname)|client host rejected: cannot find your hostname/i,
+    meaning: "The IP your mail came from has no reverse DNS (PTR) name, or the name doesn’t point back to the same IP. Many servers treat that as a sign of a hijacked machine.",
+    fix: ["Ask whoever owns your sending IP (your host or ISP) to set its PTR record to a name such as mail.yourdomain.com.",
+          "Make sure that name has an A record pointing back to the same IP."], tools: ["ip"] },
+  { id: "virus", who: "sender", title: "An attachment was blocked",
+    test: /virus|malware|infected|(attachment|file type|extension)[^.]*(not allowed|blocked|rejected|prohibited)|blocked attachment/i,
+    meaning: "A virus scanner or attachment filter refused the message because of an attached file.",
+    fix: ["Some servers refuse certain file types outright (.exe, .js, .zip with scripts, macro-enabled Office files).",
+          "Share the file as a link (OneDrive, Google Drive, Dropbox) instead of attaching it.",
+          "Scan the file: if it really is infected, the sending computer needs cleaning."] },
+  { id: "spam", who: "sender", title: "Rejected as spam",
+    test: /spam|unsolicited|\bjunk\b|content (rejected|filter)|message (content )?rejected|phish|suspicious|looks like|5\.7\.512/i,
+    meaning: "A spam filter scored the message as likely spam and refused it. That’s judged on the content, the links in it, and the reputation of your domain and sending IP.",
+    fix: ["Look at what you sent: link shorteners, a lone attachment with little text, an all-caps subject, or a link to a site on a blocklist are common triggers. Send a plain one-line test to the same address to see whether the content is the cause.",
+          "Run a domain report on your domain: SPF, DKIM and DMARC should pass, and the domain shouldn’t be on SURBL or URIBL.",
+          "Check your sending server’s IP on blocklists.",
+          "If this started suddenly for many recipients, your account may be sending spam without you knowing: change the password and look at the sent folder."], tools: ["ip", "domain"] },
+  { id: "nouser", who: "sender", title: "The address doesn’t exist",
+    test: /5\.1\.1\b|5\.1\.10|user unknown|unknown user|no such (user|mailbox|recipient)|does ?n[o’']?t exist|recipient not found|address not found|mailbox unavailable|invalid (recipient|mailbox|address)|unrouteable address|not a valid recipient|mailbox not found|unknown recipient|recipientnotfound|as\(201806281\)|no mailbox here|address couldn[’']?t be found/i,
+    meaning: "The recipient’s server says there’s no mailbox with that name. Usually a typo, or someone who has left the organisation.",
+    fix: ["Check the address for typos, then confirm it with the person another way.",
+          "Remove it from any mailing list: repeatedly mailing addresses that don’t exist hurts your sending reputation."] },
+  { id: "nodomain", who: "either", title: "The recipient’s domain can’t receive mail",
+    test: /5\.1\.2|5\.4\.4|host or domain name not found|domain (not found|does ?n[o’']?t exist)|name service error|nxdomain|no mx|unable to route|unroutable|no such domain|domain.*(has no|without) (mx|mail)/i,
+    meaning: "Your server couldn’t find a mail server for the part after the @: the domain doesn’t exist, has expired, or has no MX record.",
+    fix: ["Check the spelling of the domain (gmial.com, outlok.com and the like).",
+          "If it’s spelled right, run a domain report on it: the problem is in that domain’s DNS, and only its owner can fix it."], tools: ["rcptdomain"] },
+  { id: "full", who: "recipient", title: "The recipient’s mailbox is full",
+    test: /[45]\.2\.2|mailbox (is )?full|over ?quota|quota (exceeded|full)|exceeded (its |the )?(storage|quota)|insufficient (system )?storage|mailbox size limit|out of storage/i,
+    meaning: "The recipient has run out of space, so their server can’t accept new mail.",
+    fix: ["Nothing is wrong on your side. Let the recipient know another way so they can free up space.",
+          "If the code starts with 4, your server keeps retrying for a day or more and may still deliver it."] },
+  { id: "disabled", who: "recipient", title: "The recipient’s account is closed or suspended",
+    test: /5\.2\.1|account (is |has been )?(disabled|inactive|suspended|closed|locked)|mailbox (is )?(disabled|inactive)|user (is )?(inactive|suspended)|no longer (active|available|in use)/i,
+    meaning: "The mailbox exists but has been switched off, often because the person left or the account was abandoned.",
+    fix: ["Contact the person another way, and remove the address from your lists."] },
+  { id: "size", who: "sender", title: "The message is too big",
+    test: /5\.3\.4|5\.2\.3|too (large|big)|size (limit|exceeds)|exceeds (the )?(maximum|size|limit)|message size|552 5\.3\.4/i,
+    meaning: "The message, with its attachments, is over the size the receiving server accepts.",
+    fix: ["Share large files as a link instead of attaching them.",
+          "Many servers accept 20 to 25 MB at most, and attachments grow by about a third when they’re sent."] },
+  { id: "relay", who: "sender", title: "The server refused to pass your message on (relay denied)",
+    test: /relay(ing)? (denied|not permitted|access denied|prohibited)|not permitted to relay|unable to relay|5\.7\.54|5\.7\.64|we do not relay|relay not permitted/i,
+    meaning: "Your mail program handed the message to a server that didn’t recognise you, so it refused to deliver it onwards. Servers do this to avoid being abused by spammers.",
+    fix: ["In your mail program’s outgoing (SMTP) settings, turn on “My outgoing server requires authentication”, use port 587 with STARTTLS, and the same username and password as for incoming mail.",
+          "If you run the receiving server: this domain may be missing from its list of accepted domains."] },
+  { id: "senderauth", who: "sender", title: "Your server must log in, or your sender address was refused",
+    test: /authentication required|must (be )?authenticat|5\.7\.0\b|sender address rejected|5\.1\.[78]|domain of sender address|sender domain|5\.7\.57|client not authenticated|530 /i,
+    meaning: "The server refused your sender: either your mail program didn’t log in before sending, or the domain in your From address doesn’t look valid.",
+    fix: ["Turn on SMTP authentication in your mail program’s outgoing settings.",
+          "If it says the sender domain was rejected, the domain in your address must exist in DNS with an MX or A record. Run a domain report on it."], tools: ["domain"] },
+  { id: "tls", who: "either", title: "The receiving server requires encryption",
+    test: /5\.7\.1[01]\b|tls (is )?required|must issue a starttls|starttls (is )?required|encryption required/i,
+    meaning: "The receiving server only accepts mail over an encrypted (TLS) connection, and your server didn’t use one.",
+    fix: ["Enable TLS (STARTTLS) for outgoing mail on your mail server, or ask your host to."] },
+  { id: "ratelimit", who: "sender", title: "Slowed down: too much mail, or greylisting",
+    test: /4\.7\.28|\b421\b|\brate[ -]?limit|\brated\b|too many (messages|connections|recipients|emails)|try again later|temporarily (deferred|rejected|blocked)|grey ?list|gray ?list|throttl|(daily|hourly)? ?sending (limit|quota)|exceeded.*(sending|message) limit|5\.4\.5/i,
+    meaning: "The receiving server is limiting how fast it accepts mail from you, or is greylisting (asking unknown servers to try again later).",
+    fix: ["If the code starts with 4, it’s temporary: your server retries automatically, usually within an hour.",
+          "If you sent to many people at once, spread it out or use a proper bulk-mail service.",
+          "If it says you hit a daily sending limit, that’s your own provider’s limit: wait until it resets or ask for a higher one."] },
+  { id: "timeout", who: "recipient", title: "Couldn’t reach the recipient’s mail server",
+    test: /timed? ?out|connection refused|retry timeout exceeded|could not connect|unable to connect|couldn[’']?t connect|4\.4\.[127]|5\.4\.7|message expired|have been failing|host unreachable|network is unreachable|no answer from host|delivery (time|period) expired/i,
+    meaning: "Your server kept trying to connect to the recipient’s mail server and never got through, then gave up.",
+    fix: ["Run a domain report on the recipient’s domain to check its MX records and whether its mail servers answer.",
+          "If their setup looks fine, the outage is on their side: contact them another way."], tools: ["rcptdomain"] },
+  { id: "loop", who: "recipient", title: "Mail loop",
+    test: /5\.4\.6|mail loop|loops? (back|detected)|too many hops|5\.4\.14|routing loop/i,
+    meaning: "The message bounced back and forth between servers until it was stopped. Usually a forwarding rule or MX record pointing back at itself.",
+    fix: ["Whoever runs the recipient’s domain must check its forwarding rules and MX records."] },
+  { id: "policy", who: "recipient", title: "Refused by the recipient’s own rules",
+    test: /5\.7\.1\b|access denied|not allowed|\bblocked\b|rejected by (policy|recipient)|policy|prohibited|refused|5\.7\.\d+|denied/i,
+    meaning: "The receiving server refused the message under its own rules. It may block your address, domain or IP, or accept mail only from approved senders (common for distribution lists).",
+    fix: ["Ask the recipient, another way, to allow-list your address, and send their IT the exact error text.",
+          "If several unrelated recipients refuse you like this, check your domain and IP reputation."], tools: ["ip", "domain"] },
+];
+const UNKNOWN_RULE = { id: "unknown", who: "either", title: "Delivery failed",
+  meaning: "The server gave a reason this tool doesn’t recognise. The exact error text below is what matters.",
+  fix: ["Search for the exact error text, or send it to the recipient’s IT team."] };
+const WHO_TEXT = { sender: "You (the sender) or your mail host", recipient: "The recipient’s side", either: "Could be either side" };
+
+function cleanReply(text) {
+  // "550-5.7.1 a\n550-5.7.1 b\n550 5.7.1 c" -> "550 5.7.1 a b c"
+  const t = text.replace(/\s+/g, " ").trim();
+  const m = t.match(/^([245]\d\d)[ -](?:#?([245]\.\d{1,3}\.\d{1,3})\s*)?(.*)$/);
+  if (!m) return { code: null, status: null, text: t };
+  const rest = m[3].replace(new RegExp(`\\b${m[1]}[ -](?:#?${(m[2] || "x").replace(/\./g, "\\.")}\\s*)?`, "g"), "").trim();
+  return { code: Number(m[1]), status: m[2] || null, text: rest };
+}
+function extractReply(text) {
+  let m = text.match(/Remote Server returned '([^']+)'/i);
+  if (m) { const inner = m[1].replace(/^<[^>]*?#([245]\.\d+\.\d+)\s*smtp;\s*/i, "").replace(/>$/, ""); return cleanReply(inner); }
+  m = text.match(/Diagnostic-Code:\s*(?:smtp|x-[\w-]+);\s*([\s\S]+?)(?=\n\S|\n\s*\n|$)/i);
+  if (m) return cleanReply(m[1]);
+  m = text.match(/said:\s*([\s\S]+?)(?:\(in reply to [^)]+\)|\n\s*\n|$)/i);
+  if (m) return cleanReply(m[1]);
+  m = text.match(/(?:response from the remote server was|remote host said|the error that the other server returned was):?\s*([\s\S]+?)(?:\n\s*\n|$)/i);
+  if (m) return cleanReply(m[1]);
+  const lines = text.split("\n").map((l) => l.trim().replace(/^(<<<|\(reason:)\s*/i, "").replace(/\)$/, ""));
+  const i = lines.findIndex((l) => /^[245]\d\d[ -]/.test(l));
+  if (i >= 0) {
+    const code = lines[i].slice(0, 3), part = [lines[i]];
+    for (let j = i + 1; j < lines.length && (lines[j].startsWith(code) || (lines[j] && !/^(host|smtp error|giving up|-{3,}|\S+@\S+$)/i.test(lines[j]) && !/^[245]\d\d[ -]/.test(lines[j]) && part.length < 6 && /[a-z]/i.test(lines[j]) && !/^[A-Z][\w-]+:/.test(lines[j]))); j++) part.push(lines[j]);
+    return cleanReply(part.join(" "));
+  }
+  return null;
+}
+function stageOf(text) {
+  const t = text.toLowerCase();
+  if (/after (end of data|data\b|sending data)|in reply to (end of )?data|>>> data|after the message (was|is) sent/.test(t)) return "data";
+  if (/after rcpt|in reply to rcpt|>>> rcpt/.test(t)) return "rcpt";
+  if (/after mail from|in reply to mail from|>>> mail from/.test(t)) return "mail";
+  if (/after (helo|ehlo)|in reply to (helo|ehlo)/.test(t)) return "helo";
+  if (/after initial connection|initial connection|smtp greeting|banner/.test(t)) return "connect";
+  return null;
+}
+function remoteOf(text) {
+  let m = text.match(/\bhost\s+([a-z0-9.-]+\.[a-z]{2,})\.?\s*\[([0-9a-f:.]+)\]/i);
+  if (m) return { host: m[1].toLowerCase(), ip: m[2] };
+  // (Microsoft's "Generating server" only wrote the report; the refusing server is the line above "Remote Server returned")
+  m = text.match(/Remote-MTA:\s*dns;\s*([a-z0-9.-]+)/i) || text.match(/\n\s*([a-z0-9.-]+\.[a-z]{2,})\s*\n\s*Remote Server returned/i) ||
+      text.match(/(?:while talking to|Receiving server:)\s*([a-z0-9.-]+\.[a-z]{2,})/i);
+  if (m) return { host: m[1].toLowerCase().replace(/\.$/, ""), ip: (text.match(/\[((?:\d{1,3}\.){3}\d{1,3})\]/) || [])[1] || null };
+  return { host: null, ip: null };
+}
+function classify(reply, blockText) {
+  // Classify on the server's own words. Without them, use the report text minus host names and addresses
+  // (so a host like smtp.antispamcloud.com isn't mistaken for "spam").
+  const basis = reply ? `${reply.status || ""} ${reply.code || ""} ${reply.text}`
+                      : blockText.replace(/\S*[.@]\S*/g, " ");
+  return BOUNCE_RULES.find((r) => r.test.test(basis)) || UNKNOWN_RULE;
+}
+
+const ADDR_RE = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+const SYSTEM_ADDR = /^(mailer-daemon|postmaster|no-?reply|bounce)/i;
+
+function analyzeBounce(raw) {
+  const text = String(raw).replace(/\r\n?/g, "\n");
+  const cut = text.search(ORIGINAL_COPY);
+  const report = cut > 0 ? text.slice(0, cut) : text;
+  const original = cut > 0 ? text.slice(cut) : "";
+  const sender = addrOf((original.match(/^From:\s*(.+)$/im) || [])[1]) || addrOf((report.match(/^To:\s*(.+)$/im) || [])[1]) || null;
+
+  // 1. Standard machine-readable part (RFC 3464): Final-Recipient / Action / Status / Diagnostic-Code
+  const blocks = [];
+  const dsnParts = report.split(/\n(?=(?:Final|Original)-Recipient:)/i).filter((p) => /^(Final|Original)-Recipient:/i.test(p.trim()));
+  dsnParts.forEach((p) => {
+    const addr = addrOf((p.match(/Final-Recipient:\s*[\w-]+;\s*(\S+)/i) || p.match(/Original-Recipient:\s*[\w-]+;\s*(\S+)/i) || [])[1]);
+    if (addr && !blocks.some((b) => b.addr === addr)) blocks.push({ addr, text: p, action: (p.match(/Action:\s*(\w+)/i) || [])[1]?.toLowerCase(), dsnStatus: (p.match(/Status:\s*([245]\.\d+\.\d+)/i) || [])[1] });
+  });
+
+  // 2. Human-readable reports: a line that is just an address (Exim, qmail, Sendmail, Microsoft) or "<addr>: ..." (Postfix)
+  if (!blocks.length) {
+    let current = null;
+    report.split("\n").forEach((line) => {
+      const only = line.match(/^\s*<?([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>?:?\s*(?:\(\1\))?\s*$/);
+      const postfix = line.match(/^\s*<([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>(?:\s*\([^)]*\))?:\s*(.+)$/);
+      const hit = only || postfix;
+      if (hit && !SYSTEM_ADDR.test(hit[1]) && hit[1].toLowerCase() !== sender) {
+        const addr = hit[1].toLowerCase();
+        current = blocks.find((b) => b.addr === addr) || (blocks.push({ addr, text: "" }), blocks[blocks.length - 1]);
+        if (postfix) current.text += postfix[2] + "\n";
+      } else if (current) current.text += line + "\n";
+    });
+  }
+
+  // 3. Gmail / Outlook style sentences: "wasn't delivered to x@y because ..."
+  if (!blocks.length) {
+    const found = [...report.matchAll(/(?:delivered to|message to|sent to|delivery to|recipients? or groups?:?)\s*<?([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/gi)].map((m) => m[1].toLowerCase());
+    const addrs = [...new Set(found)].filter((a) => !SYSTEM_ADDR.test(a) && a !== sender);
+    (addrs.length ? addrs : [null]).forEach((addr) => blocks.push({ addr, text: report }));
+  }
+
+  const recipients = blocks.map((b) => {
+    const reply = extractReply(b.text) || extractReply(report);
+    const status = reply?.status || b.dsnStatus || null;
+    if (reply && !reply.status && status) reply.status = status;
+    const rule = classify(reply, b.text);
+    const remote = remoteOf(b.text).host ? remoteOf(b.text) : remoteOf(report);
+    const warningOnly = /warning only|do not need to resend|will be retried|will (keep|continue) (trying|retrying)|still (be )?trying|not yet been delivered|delivery (is )?delayed|\(delay\)/i.test(report);
+    const temporary = b.action === "delayed" || (reply?.code ? reply.code < 500 : status ? status.startsWith("4") : warningOnly);
+    return { addr: b.addr, domain: domainOf(b.addr), reply, status, rule, stage: stageOf(b.text) || stageOf(report), remote, temporary };
+  });
+
+  // Group recipients that failed for the same reason at the same server
+  const groups = [];
+  recipients.forEach((r) => {
+    const key = `${r.rule.id}|${r.remote.host || ""}|${r.reply?.text || ""}`;
+    const g = groups.find((x) => x.key === key);
+    if (g) g.recipients.push(r); else groups.push({ key, rule: r.rule, remote: r.remote, reply: r.reply, status: r.status, stage: r.stage, temporary: r.temporary, recipients: [r] });
+  });
+
+  // The big clue: one server rejected recipients at several unrelated providers
+  const insights = [];
+  const byHost = {};
+  recipients.forEach((r) => { if (r.remote.host && r.domain) (byHost[r.remote.host] ||= new Set()).add(orgDomain(r.domain)); });
+  Object.entries(byHost).forEach(([host, domains]) => {
+    if (domains.size < 2) return;
+    const who = filterName(host);
+    insights.push(`All the recipients at ${listFormat([...domains])} were turned away by the same server, ${host}${who ? ` (${who})` : ""}. Separate providers don’t share a mail server, so this is almost certainly the filter or relay your own mail goes out through, not the recipients’ servers. The recipients never saw the message, and the fix is with your email host: send them this report.`);
+  });
+  recipients.forEach((r) => {
+    if (!r.remote.host || !r.domain || byHost[r.remote.host]?.size > 1) return;
+    const who = filterName(r.remote.host);
+    const isFilter = /spamexperts|mimecast|proofpoint|barracuda|cisco|forcepoint|sophos|trend|broadcom/i.test(who || "");
+    if (isFilter && !r.remote.host.endsWith(orgDomain(r.domain)) && !insights.some((i) => i.includes(r.remote.host)))
+      insights.push(`${r.remote.host} belongs to ${who.split(",")[0]}, a spam filter. Check whether it sits in front of ${r.domain}’s mail or in front of your own outgoing mail: if your other messages to different domains fail at the same host, it’s yours.`);
+  });
+
+  return { recipients, groups, insights, sender, senderDomain: domainOf(sender), permanent: recipients.some((r) => !r.temporary), hasOriginal: !!original };
+}
+
+function renderBounceAnalysis(b) {
+  const out = $("hdr-result");
+  out.replaceChildren();
+  const n = b.recipients.filter((r) => r.addr).length;
+  const allTemp = b.recipients.every((r) => r.temporary);
+  const causes = listFormat(b.groups.map((g) => g.rule.title.charAt(0).toLowerCase() + g.rule.title.slice(1)));
+  const headline = allTemp
+    ? `Not delivered yet${n ? ` to ${n} recipient${n === 1 ? "" : "s"}` : ""}: ${causes}. Your server is still retrying.`
+    : `${n ? `${n} recipient${n === 1 ? "" : "s"} didn’t get your message` : "Your message wasn’t delivered"}. Cause: ${causes}.`;
+  const { wrap: sum, body: sumBody } = section("bounce-summary", "What happened", allTemp ? "warn" : "fail", null);
+  sum.classList.add("bg-canvas/50");
+  add(sumBody, el("p", "max-w-3xl text-[17px] font-semibold leading-snug text-navy", headline));
+  b.insights.forEach((t) => add(sumBody, add(el("div", "grid grid-cols-[auto_1fr] items-start gap-3 rounded-lg bg-white px-3 py-2.5 ring-1 ring-rule"), pill("warn"), el("p", "min-w-0 break-anywhere text-[14px] leading-snug text-ink/80", t))));
+  if (b.sender) add(sumBody, el("p", "text-[13px] text-ink/60", `Sent from ${b.sender}.`));
+  add(out, fullRow(sum));
+
+  b.groups.forEach((g, gi) => {
+    const { wrap, body } = section(`bounce-${gi}`, g.rule.title, g.temporary ? "warn" : "fail", g.temporary ? "Temporary: still being retried" : "Permanent: it won’t be retried");
+    const chips = el("div", "flex flex-wrap gap-1.5");
+    g.recipients.forEach((r) => add(chips, el("span", "break-anywhere rounded-md bg-canvas px-2 py-0.5 font-mono text-[13px] text-navy", r.addr || "recipient not named")));
+    add(body, chips, el("p", "max-w-3xl text-[15px] leading-relaxed", g.rule.meaning));
+
+    const grid = el("div", "grid gap-8 lg:grid-cols-2");
+    const left = el("div", "min-w-0 space-y-3");
+    add(left, subheading("How to fix it"), el("p", "text-[13px] text-ink/60", `Who needs to act: ${WHO_TEXT[g.rule.who]}`));
+    const ol = el("ol", "list-decimal space-y-2 pl-5 text-[14px] leading-snug");
+    g.rule.fix.forEach((f) => add(ol, el("li", "", f)));
+    add(left, ol);
+
+    const right = el("div", "min-w-0");
+    add(right, subheading("The server’s answer"));
+    if (g.reply) add(right, add(el("div", "mt-2"), recordBlock(`${g.reply.code || ""}${g.reply.status ? ` ${g.reply.status}` : ""} ${g.reply.text}`.trim())));
+    add(right, add(el("div", "mt-2"),
+      g.reply?.code ? row("Code", `${g.reply.code}: ${BASIC_CODES[g.reply.code] || (g.reply.code >= 500 ? "permanent failure" : "temporary failure")}`) : null,
+      g.status ? row("Detail", explainStatus(g.status)) : null,
+      g.stage ? row("When", `Refused ${STAGE_TEXT[g.stage]}.`) : null,
+      g.remote.host ? row("Refused by", `${g.remote.host}${g.remote.ip ? ` [${g.remote.ip}]` : ""}${filterName(g.remote.host) ? `, ${filterName(g.remote.host)}` : ""}`) : null));
+    add(body, add(grid, left, right));
+
+    const tools = g.rule.tools || [];
+    const actions = el("div", "flex flex-wrap items-center gap-2");
+    const toolOut = el("div");
+    if (tools.includes("domain") && b.senderDomain) add(actions, actionButton(`Check ${b.senderDomain}`, () => run(b.senderDomain)));
+    if (tools.includes("rcptdomain")) [...new Set(g.recipients.map((r) => r.domain).filter(Boolean))].slice(0, 3).forEach((d) => add(actions, actionButton(`Check ${d}`, () => run(d))));
+    if (tools.includes("ip")) {
+      const form = el("form", "flex min-w-0 flex-1 flex-col gap-2 sm:flex-row");
+      const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
+      Object.assign(input, { type: "text", placeholder: "Your sending server’s IP", spellcheck: false, maxLength: 45, inputMode: "decimal" });
+      input.setAttribute("aria-label", "Your sending server's IP address");
+      const btn = el("button", "rounded-lg border border-sky px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check on blocklists");
+      btn.type = "submit";
+      form.addEventListener("submit", (e) => { e.preventDefault(); if (input.value.trim()) checkOneIp(input.value.trim(), toolOut); });
+      add(actions, add(form, input, btn));
+    }
+    if (actions.children.length) add(body, add(el("div", "space-y-2 border-t border-rule pt-4"), actions, toolOut,
+      tools.includes("ip") ? el("p", "text-[12px] text-ink/50", "Not sure of your sending IP? Paste the headers of a message you sent into this analyzer; it finds the IP for you.") : null));
+    add(out, fullRow(wrap));
+  });
+}
+
+const SAMPLE_BOUNCE = `This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  anna@fabrikam.example
+    host smtp.filter.hostco.example [203.0.113.150]
+    SMTP error from remote mail server after end of data:
+    550 High probability of spam
+  ben.ortiz@contoso.example
+    host smtp.filter.hostco.example [203.0.113.150]
+    SMTP error from remote mail server after end of data:
+    550 High probability of spam
+  li.chen@tailspin.example
+    host smtp.filter.hostco.example [203.0.113.150]
+    SMTP error from remote mail server after end of data:
+    550 High probability of spam
+
+------ This is a copy of the message, including all the headers. ------
+
+From: Priya Nair <priya@northwind.example>
+To: anna@fabrikam.example, ben.ortiz@contoso.example, li.chen@tailspin.example
+Subject: Quote for November`;
+
 function runHeaderAnalysis() {
   const err = $("hdr-error");
   err.classList.add("hidden");
   const raw = $("hdr-input").value;
   if (!raw.trim()) { err.textContent = "Paste a message’s headers first."; err.classList.remove("hidden"); return; }
+  // A bounce (non-delivery report) gets its own explanation
+  if (isBounceText(raw)) {
+    renderBounceAnalysis(analyzeBounce(raw));
+    $("hdr-result").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    return;
+  }
   const headers = parseHeaderBlock(raw);
   const usable = headers.some((h) => /^(from|received|subject|date|message-id|authentication-results|to)$/.test(h.key));
   if (!usable) {
     $("hdr-result").replaceChildren();
-    err.textContent = "That doesn’t look like email headers. Copy the full original message (see “Where do I find them?”).";
+    err.textContent = "That doesn’t look like email headers or a bounce message. Copy the full original message (see “Where do I find them?”).";
     err.classList.remove("hidden");
     return;
   }
@@ -2426,6 +2796,7 @@ $("dmarc-copy").addEventListener("click", () => copyText($("dmarc-output").textC
 
 $("hdr-form").addEventListener("submit", (e) => { e.preventDefault(); runHeaderAnalysis(); });
 $("hdr-sample").addEventListener("click", () => { $("hdr-input").value = SAMPLE_HEADERS; runHeaderAnalysis(); });
+$("hdr-sample-bounce").addEventListener("click", () => { $("hdr-input").value = SAMPLE_BOUNCE; runHeaderAnalysis(); });
 $("hdr-clear").addEventListener("click", () => { $("hdr-input").value = ""; $("hdr-result").replaceChildren(); $("hdr-error").classList.add("hidden"); $("hdr-input").focus(); });
 
 $("search-form").addEventListener("submit", (e) => { e.preventDefault(); run($("domain-input").value); });
