@@ -22,7 +22,7 @@ Plus four tools:
 - **Propagation:** compares 8 public resolvers with the authoritative nameserver.
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
-- **Header analyzer:** paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
+- **Headers & bounces:** paste a bounce (non-delivery report) to get the cause in plain English, who has to fix it and how, per recipient. It reads Exim, Postfix, Sendmail, qmail, Gmail, Microsoft 365 and standard RFC 3464 reports, explains the SMTP and enhanced status codes and the stage at which the mail was refused, and spots when several unrelated providers were all refused by one server (your own outgoing filter). Or paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
 
 Live at **https://dig.sujaiprojects.stream**
 
