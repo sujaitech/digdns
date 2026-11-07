@@ -51,6 +51,33 @@
       .animate-pulse, .animate-spin { animation: none; }
     }
 
+    /* "Slice" button (after nikk7007 on Uiverse.io), in the logo colours: a sky outline whose
+       fill sweeps in diagonally on hover. The fill sits behind the text (z-index -1 inside an
+       isolated button), so it works even when JavaScript replaces the label text. */
+    .slice {
+      --c1: #262262;   /* navy: text on the filled button */
+      --c2: #27AAE1;   /* sky: outline, text, fill */
+      position: relative; isolation: isolate; overflow: hidden;
+      display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+      padding: .95rem 2rem; font-size: 1rem; font-weight: 700; line-height: 1.5; white-space: nowrap;
+      color: var(--c2); background: transparent;
+      border: 3px solid var(--c2); border-radius: .5rem; cursor: pointer;
+      transition: color 700ms cubic-bezier(.83,0,.17,1), scale 300ms cubic-bezier(.83,0,.17,1), filter 300ms;
+    }
+    .slice::after {
+      content: ""; position: absolute; z-index: -1;
+      inset: 50%; translate: -50% -50%; rotate: 30deg;
+      width: 0; height: calc(300% + 1em);
+      background: var(--c2);
+      transition: width 1000ms cubic-bezier(.83,0,.17,1);
+    }
+    .slice:hover, .slice:focus-visible, .slice:disabled { color: var(--c1); }
+    .slice:hover::after, .slice:focus-visible::after, .slice:disabled::after { width: calc(120% + 1em); }
+    .slice:active { scale: .98; filter: brightness(.9); }
+    .slice:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+    .slice:disabled { cursor: wait; }
+    @media (prefers-reduced-motion: reduce) { .slice, .slice::after { transition: none; } }
+
     /* Custom checkbox/radio cards in the builders */
     .choice:has(input:checked) { border-color: #27AAE1; background: rgba(39,170,225,.08); }
     .choice:has(input:focus-visible) { outline: 2px solid #27AAE1; outline-offset: 2px; }
@@ -89,8 +116,7 @@
           <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
                  placeholder="example.com" required maxlength="253"
                  class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
-          <button id="search-btn" type="submit"
-                  class="inline-flex items-center justify-center gap-2 rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">
+          <button id="search-btn" type="submit" class="slice">
             <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
               <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
@@ -120,7 +146,7 @@
           <select id="prop-type" class="rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
             <option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>NS</option><option>TXT</option><option>CAA</option>
           </select>
-          <button id="prop-btn" type="submit" class="rounded-lg bg-sky px-8 py-3.5 text-base font-bold text-navy transition-colors hover:bg-white focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50 disabled:cursor-wait disabled:opacity-70">Check</button>
+          <button id="prop-btn" type="submit" class="slice">Check</button>
         </form>
       </div>
 
@@ -158,13 +184,16 @@
       </div>
     </section>
 
-    <article id="report" class="hidden overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]" aria-live="polite">
-      <div id="sample-banner" class="hidden bg-orange/15 px-6 py-2.5 text-sm text-ink sm:px-10">
-        This is a sample report with made-up data for a fictional domain. Enter a real domain above to run a live check.
-      </div>
-      <div id="hero" class="p-6 sm:p-10"></div>
-      <div id="sections"></div>
-    </article>
+    <div id="report" class="hidden" aria-live="polite">
+      <article class="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)]">
+        <div id="sample-banner" class="hidden bg-orange/15 px-6 py-2.5 text-sm text-ink sm:px-10">
+          This is a sample report with made-up data for a fictional domain. Enter a real domain above to run a live check.
+        </div>
+        <div id="hero" class="p-6 sm:p-10"></div>
+      </article>
+      <!-- Results: a bento grid of tiles, grouped into Website, Domain and DNS, and Email -->
+      <div id="sections" class="mt-8"></div>
+    </div>
   </main>
 
   <!-- ================= VIEW: PROPAGATION ================= -->
@@ -490,8 +519,9 @@ function actionButton(label, onClick) {
 }
 
 function section(id, title, status, verdict) {
-  const wrap = el("section", "min-w-0 scroll-mt-6 p-6 sm:p-8");
+  const wrap = el("section", "@container h-full min-w-0 scroll-mt-6 p-6 sm:p-8");
   wrap.id = id;
+  wrap.dataset.status = status;
   const head = el("div", "mb-5 flex items-start justify-between gap-4");
   add(head, add(el("div", "min-w-0"),
                 el("h3", "semi-wide text-lg font-bold text-navy", title),
@@ -575,13 +605,17 @@ const RAIL = [
   ["SSL",   "sec-tls",   (d) => d.tls?.status,   (d) => verdictTLS(d.tls)],
 ];
 
+// Which checks each rail segment waits for while a report is streaming in
+const RAIL_NEEDS = { Website: ["website"], Domain: ["registration"], DNS: ["dns", "nameservers"], SPF: ["spf"],
+                     DKIM: ["dkim"], DMARC: ["dmarc"], Mail: ["mail"], SSL: ["tls"] };
 function renderRail(data, pending = false) {
   const rail = el("nav", "mt-8 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-8");
   rail.setAttribute("aria-label", "Results summary");
   RAIL.forEach(([name, target, statusOf, verdictOf]) => {
-    const status = pending ? "pending" : statusOf(data) || "error";
+    const waiting = pending || (data.partial && !RAIL_NEEDS[name].every((k) => data[k]));
+    const status = waiting ? "pending" : statusOf(data) || "error";
     let verdict = "Checking…";
-    if (!pending) { try { verdict = verdictOf(data); } catch { verdict = st(status).word; } }
+    if (!waiting) { try { verdict = verdictOf(data); } catch { verdict = st(status).word; } }
     const a = el("a", "group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky focus-visible:ring-offset-4");
     a.href = `#${target}`;
     a.addEventListener("click", (e) => { e.preventDefault(); $(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
@@ -683,12 +717,15 @@ function renderHero(data, { pending = false } = {}) {
   const hero = $("hero");
   hero.replaceChildren();
   add(hero, el("h2", "display break-anywhere text-[2rem] font-extrabold leading-[1.08] text-navy sm:text-5xl lg:text-6xl", data.domain));
-  if (pending) add(hero, el("p", "mt-4 text-lg text-ink/60", "Looking up registration, DNS, hosting, mail and certificate details…"));
+  if (pending) add(hero, el("p", "mt-4 text-lg text-ink/60", "Starting the checks…"));
+  else if (data.partial) add(hero,
+    data.hosting ? renderHosting(data.hosting) : el("p", "mt-4 text-lg text-ink/60", "Finding out where the website is hosted…"),
+    partialFacts(data), progressList(data));
   else add(hero, renderHosting(data.hosting), factsLines(data));
   const rail = renderRail(data, pending);
   add(hero, rail);
   requestAnimationFrame(() => requestAnimationFrame(() => rail.classList.add("rail-ready")));
-  if (!pending) {
+  if (!pending && !data.partial) {
     const share = actionButton("Copy report link", () => {
       const link = `${location.origin}${location.pathname}?domain=${encodeURIComponent(data.domain)}`;
       copyText(link, share, null, "Copy report link");
@@ -729,16 +766,6 @@ function showTextPanel(text) {
   area.select();
 }
 
-/** Grey placeholder sections shown while a report loads, so the page doesn't jump. */
-function skeletonSections() {
-  const bar = (w) => el("div", `h-3 rounded-full bg-canvas ${w}`);
-  const block = () => add(el("div", "space-y-3 p-6 sm:p-8"),
-    el("div", "mb-5 h-5 w-40 rounded-full bg-canvas"), bar("w-full"), bar("w-11/12"), bar("w-3/4"), bar("w-5/6"));
-  const wrap = el("div", "animate-pulse");
-  wrap.setAttribute("aria-hidden", "true");
-  return add(wrap, fullRow(block()), pairRow(block(), block()), pairRow(block(), block()));
-}
-
 /* =====================================================================
    REPORT SECTIONS
    ===================================================================== */
@@ -758,7 +785,7 @@ function renderRegistration(r) {
   add(body, findings(r));
   if (!r.found) return wrap;
 
-  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const grid = el("div", "grid gap-8 @3xl:grid-cols-2");
   const left = el("div", "min-w-0");
   const expiresVal = add(el("div"),
     el("span", "", fmtDate(r.expires)),
@@ -800,7 +827,7 @@ function renderDNS(dns) {
   add(body, findings(dns));
   const table = el("dl", "divide-y divide-rule/70");
   Object.entries(dns.records || {}).forEach(([type, info]) => {
-    const r = el("div", "grid grid-cols-[4.5rem_1fr] gap-4 py-2.5 sm:grid-cols-[6rem_1fr]");
+    const r = el("div", "grid grid-cols-[4.5rem_1fr] gap-4 py-2.5 @lg:grid-cols-[6rem_1fr]");
     add(r, el("dt", "pt-px font-mono text-[13px] font-semibold text-blue", type));
     const dd = el("dd", "min-w-0 space-y-1");
     if (info.error) add(dd, el("div", "text-fail", info.error));
@@ -880,7 +907,7 @@ function renderDKIM(k, domain) {
   }
 
   // Check a specific selector (the s= value from an email's DKIM-Signature header)
-  const form = el("form", "flex flex-col gap-2 sm:flex-row");
+  const form = el("form", "flex flex-col gap-2 @lg:flex-row");
   form.autocomplete = "off";
   const label = el("label", "sr-only", "Selector to check");
   label.htmlFor = "dkim-selector";
@@ -967,7 +994,7 @@ function caaBlock(caa) {
 function renderTLS(t) {
   const { wrap, body } = section("sec-tls", "SSL certificate", t.status, verdictTLS(t));
   add(body, findings(t));
-  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const grid = el("div", "grid gap-8 @3xl:grid-cols-2");
   const left = el("div", "min-w-0");
   if (t.not_after) {
     add(left,
@@ -990,6 +1017,56 @@ function renderTLS(t) {
   return wrap;
 }
 
+/* =====================================================================
+   BENTO LAYOUT: tiles of different sizes, grouped by subject
+   ===================================================================== */
+const BENTO = [
+  { title: "Website and security", hint: "Is the site up, what it’s built with, and its certificate",
+    tiles: [["website", "lg:col-span-8"], ["tls", "lg:col-span-4"]] },
+  { title: "Domain and DNS", hint: "Who it’s registered with, and whether its DNS is healthy",
+    tiles: [["registration", "lg:col-span-5"], ["nameservers", "lg:col-span-7"], ["dns", "lg:col-span-12"]] },
+  { title: "Email", hint: "Whether mail from this domain is trusted and delivered",
+    tiles: [["spf", "lg:col-span-6"], ["dmarc", "lg:col-span-6"], ["dkim", "lg:col-span-5"], ["mail", "lg:col-span-7"],
+            ["blocklists", "lg:col-span-7"], ["mail_security", "lg:col-span-5"]] },
+];
+const TILE_EDGE = { pass: "border-t-pass", warn: "border-t-warn", fail: "border-t-fail", info: "border-t-sky", error: "border-t-ink/30", pending: "border-t-rule" };
+/** Colour a tile's top edge by the status of the section inside it. */
+function paintTile(tile) {
+  const status = tile.firstElementChild?.dataset?.status || "pending";
+  Object.values(TILE_EDGE).forEach((c) => tile.classList.remove(c));
+  tile.classList.add(TILE_EDGE[status] || TILE_EDGE.pending);
+}
+function tile(content, span = "") {
+  const t = el("div", `min-w-0 overflow-hidden rounded-2xl border-t-4 bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)] ${span}`);
+  add(t, content);
+  paintTile(t);
+  return t;
+}
+/** Build the whole grid. fill(key) returns the content of each tile; groupStatus(keys) the heading's pill (or null). */
+function bentoLayout(fill, groupStatus = () => null, attention = null) {
+  const out = el("div", "space-y-10");
+  if (attention) add(out, tile(attention));
+  BENTO.forEach((g) => {
+    const grid = el("div", "grid gap-4 lg:grid-cols-12");
+    g.tiles.forEach(([key, span]) => { const t = tile(fill(key), span); t.id = `slot-${key}`; add(grid, t); });
+    const status = groupStatus(g.tiles.map(([k]) => k));
+    add(out, add(el("div", ""),
+      add(el("div", "mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-1 px-1"),
+        add(el("div", "min-w-0"), el("h2", "semi-wide text-xl font-bold text-navy", g.title), el("p", "text-[13px] text-ink/60", g.hint)),
+        status ? pill(status) : null),
+      grid));
+  });
+  return out;
+}
+const FINAL_RENDER = {
+  website: (d) => renderWebsite(d.website || {}), registration: (d) => renderRegistration(d.registration || {}),
+  dns: (d) => renderDNS(d.dns), nameservers: (d) => renderNameservers(d.nameservers || {}),
+  spf: (d) => renderSPF(d.spf, d.domain), dmarc: (d) => renderDMARC(d.dmarc, d.domain),
+  dkim: (d) => renderDKIM(d.dkim || {}, d.domain), mail: (d) => renderMail(d.mail, d.providers),
+  mail_security: (d) => renderMailSecurity(d.mail_security || {}), blocklists: (d) => renderBlocklists(d.blocklists || {}),
+  tls: (d) => renderTLS(d.tls),
+};
+
 let currentReport = null;
 function renderReport(data) {
   currentReport = data;
@@ -998,19 +1075,10 @@ function renderReport(data) {
   $("sample-banner").classList.toggle("hidden", !data.sample);
   $("report").classList.remove("hidden");
   renderHero(data);
-  const s = $("sections");
-  s.replaceChildren();
-  add(s,
-    fullRow(renderAttention(data)),
-    fullRow(renderWebsite(data.website || {})),
-    fullRow(renderRegistration(data.registration || {})),
-    fullRow(renderDNS(data.dns)),
-    fullRow(renderNameservers(data.nameservers || {})),
-    pairRow(renderSPF(data.spf, data.domain), renderDMARC(data.dmarc, data.domain)),
-    pairRow(renderDKIM(data.dkim || {}, data.domain), renderMail(data.mail, data.providers)),
-    fullRow(renderMailSecurity(data.mail_security || {})),
-    fullRow(renderBlocklists(data.blocklists || {})),
-    fullRow(renderTLS(data.tls)));
+  $("sections").replaceChildren(bentoLayout(
+    (key) => FINAL_RENDER[key](data),
+    (keys) => worstStatus(...keys.map((k) => data[k]?.status || "error")),
+    renderAttention(data)));
 }
 
 /* ---- What needs attention: every problem across the report, worst first ---- */
@@ -1069,7 +1137,7 @@ function renderWebsite(w) {
   add(body, findings(w));
   if (!w.status_code) return wrap;
 
-  const grid = el("div", "grid gap-8 lg:grid-cols-2");
+  const grid = el("div", "grid gap-8 @3xl:grid-cols-2");
   const left = el("div", "min-w-0");
   add(left,
     row("Status", `${w.status_code} ${w.reason || ""}`.trim()),
@@ -1112,7 +1180,7 @@ function renderWebsite(w) {
 
   if (w.security?.length) {
     const set = w.security.filter((h) => h.present).length;
-    const list = el("div", "grid gap-x-8 gap-y-3 sm:grid-cols-2");
+    const list = el("div", "grid gap-x-8 gap-y-3 @lg:grid-cols-2");
     w.security.forEach((h) => add(list, add(el("div", "min-w-0"),
       add(el("div", "flex flex-wrap items-baseline gap-x-2"),
         el("span", `text-xs font-semibold ${h.present ? "text-pass" : "text-ink/50"}`, h.present ? "Set" : "Missing"),
@@ -1296,11 +1364,11 @@ function renderNameservers(n) {
   add(body, findings(n));
   if (!servers.length) return wrap;
   // A responsive list: columns from tablet width up, stacked rows on phones (no sideways scrolling).
-  const COLS = "sm:grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem]";
+  const COLS = "@lg:grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_minmax(0,1fr)_5.5rem]";
   const list = el("div", "divide-y divide-rule/70");
   list.setAttribute("role", "table");
   list.setAttribute("aria-label", "Nameserver checks");
-  const head = add(el("div", `hidden gap-4 pb-2 text-[13px] text-ink/60 sm:grid ${COLS}`),
+  const head = add(el("div", `hidden gap-4 pb-2 text-[13px] text-ink/60 @lg:grid ${COLS}`),
     ...["Nameserver", "State", "SOA serial", "Response"].map((h) => el("div", "", h)));
   head.setAttribute("role", "row");
   add(list, head);
@@ -1312,13 +1380,13 @@ function renderNameservers(n) {
     rowEl.setAttribute("role", "row");
     add(list, add(rowEl,
       add(el("div", "min-w-0"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", s.host), el("div", "font-mono text-[12px] text-ink/60", s.ip || "no IPv4")),
-      add(el("div", "justify-self-end sm:justify-self-start"), stateEl),
+      add(el("div", "justify-self-end @lg:justify-self-start"), stateEl),
       // Phones: one quiet detail line. Tablet and up: two separate columns.
-      el("div", "tabular col-span-2 font-mono text-[12px] text-ink/60 sm:hidden",
+      el("div", "tabular col-span-2 font-mono text-[12px] text-ink/60 @lg:hidden",
         `SOA serial ${s.serial ?? "—"}${s.rtt_ms != null ? `, ${s.rtt_ms} ms` : ""}`),
-      el("div", "tabular hidden font-mono text-[13px] sm:block", s.serial ?? "—"),
-      el("div", "tabular hidden font-mono text-[13px] sm:block", s.rtt_ms != null ? `${s.rtt_ms} ms` : "—")));
-    if (s.error) add(list.lastChild, el("p", "col-span-2 text-[13px] text-fail sm:col-span-4", s.error));
+      el("div", "tabular hidden font-mono text-[13px] @lg:block", s.serial ?? "—"),
+      el("div", "tabular hidden font-mono text-[13px] @lg:block", s.rtt_ms != null ? `${s.rtt_ms} ms` : "—")));
+    if (s.error) add(list.lastChild, el("p", "col-span-2 text-[13px] text-fail @lg:col-span-4", s.error));
   });
   add(body, list);
   if (n.zone) add(body, el("p", "text-[13px] text-ink/60", `Each server was asked directly for the SOA record of ${n.zone}.`));
@@ -1359,7 +1427,7 @@ function listReasons(lists) {
 }
 function blocklistRows(ips) {
   const wrap = el("div", "divide-y divide-rule/70");
-  ips.forEach((e) => add(wrap, add(el("div", "grid gap-2 py-3 sm:grid-cols-[minmax(0,13rem)_1fr] sm:gap-4"),
+  ips.forEach((e) => add(wrap, add(el("div", "grid gap-2 py-3 @lg:grid-cols-[minmax(0,13rem)_1fr] @lg:gap-4"),
     add(el("div", "min-w-0"), el("div", "font-mono text-[13px] font-semibold text-navy", e.ip), el("div", "text-[12px] text-ink/60", e.roles.join(", "))),
     add(el("div", "min-w-0"), listChips(e.lists), listReasons(e.lists)))));
   return wrap;
@@ -1390,11 +1458,11 @@ function renderBlocklists(b) {
     "Mail servers check these public lists to decide whether to accept email. What matters most is the IP that sends your mail; a listed website IP only matters if that server also sends mail."));
   add(body, findings(b));
   if (b.ips?.length) add(body, blocklistRows(b.ips));
-  if (b.domain_lists?.length) add(body, add(el("div", "grid gap-2 border-t border-rule/70 pt-3 sm:grid-cols-[minmax(0,13rem)_1fr] sm:gap-4"),
+  if (b.domain_lists?.length) add(body, add(el("div", "grid gap-2 border-t border-rule/70 pt-3 @lg:grid-cols-[minmax(0,13rem)_1fr] @lg:gap-4"),
     add(el("div", "min-w-0"), el("div", "break-anywhere font-mono text-[13px] font-semibold text-navy", b.domain), el("div", "text-[12px] text-ink/60", "Domain, as a link in emails")),
     add(el("div", "min-w-0"), listChips(b.domain_lists), listReasons(b.domain_lists))));
 
-  const form = el("form", "flex flex-col gap-2 sm:flex-row");
+  const form = el("form", "flex flex-col gap-2 @lg:flex-row");
   form.autocomplete = "off";
   const label = el("label", "sr-only", "IPv4 address to check");
   label.htmlFor = "bl-ip";
@@ -1416,7 +1484,7 @@ function renderMailSecurity(m) {
   const parts = [m.mta_sts, m.tls_rpt, m.bimi].filter((x) => x?.found).length;
   const verdict = m.status === "error" ? "Couldn't be checked" : parts ? `${parts} of 3 set up` : "None set up (optional)";
   const { wrap, body } = section("sec-mailsec", "MTA-STS, TLS reporting and BIMI", m.status || "error", verdict);
-  const grid = el("div", "grid gap-6 sm:grid-cols-3");
+  const grid = el("div", "grid gap-6 @lg:grid-cols-3");
   const block = (title, explain, found, rows) => add(el("div", "min-w-0 space-y-2"),
     add(el("div", "flex items-center gap-2"), el("h4", "font-semibold text-navy", title),
         el("span", `text-xs font-semibold ${found ? "text-pass" : "text-ink/50"}`, found ? "Set up" : "Not set up")),
@@ -2726,6 +2794,98 @@ const SAMPLE_PROP = {
 };
 
 /* =====================================================================
+   STREAMING: show each section as soon as its check finishes
+   ===================================================================== */
+const CHECKS = [
+  ["dns", "DNS records"], ["caa", "CAA"], ["spf", "SPF"], ["dmarc", "DMARC"], ["hosting", "Hosting"],
+  ["nameservers", "Nameservers"], ["dkim", "DKIM keys"], ["mail_security", "MTA-STS and BIMI"], ["tls", "SSL certificate"],
+  ["mail", "Mail servers"], ["registration", "Registration"], ["website", "Website"], ["blocklists", "Blocklists"],
+];
+let streamStarted = 0;
+
+/** "7 of 13 checks done" plus a chip per check: coloured when done, pulsing while running. */
+function progressList(data) {
+  const done = CHECKS.filter(([k]) => data[k]).length;
+  const secs = Math.max(0, Math.round((Date.now() - streamStarted) / 1000));
+  const box = el("div", "mt-6 rounded-xl bg-canvas/60 p-4 ring-1 ring-rule");
+  box.setAttribute("role", "status");
+  const bar = el("div", "mt-2 h-1.5 overflow-hidden rounded-full bg-rule");
+  add(bar, el("div", "h-full rounded-full bg-sky transition-[width] duration-300"));
+  bar.firstChild.style.width = `${Math.round((done / CHECKS.length) * 100)}%`;
+  const chips = el("ul", "mt-3 flex flex-wrap gap-1.5");
+  CHECKS.forEach(([k, label]) => {
+    const d = data[k];
+    const status = d ? d.status || "error" : null;
+    add(chips, add(el("li", `inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] ${d ? st(status).pill : "bg-white text-ink/60 ring-1 ring-rule"}`),
+      el("span", `inline-block h-1.5 w-1.5 rounded-full ${d ? st(status).bar : "animate-pulse bg-sky"}`), el("span", "", label)));
+  });
+  const waiting = CHECKS.filter(([k]) => !data[k]).map(([, l]) => l);
+  return add(box,
+    add(el("div", "flex flex-wrap items-baseline justify-between gap-x-4 text-[14px]"),
+      el("span", "font-semibold text-navy", `${done} of ${CHECKS.length} checks done`),
+      el("span", "tabular text-ink/60", `${secs} s`)),
+    bar, chips,
+    waiting.length && waiting.length <= 3 ? el("p", "mt-2 text-[12px] text-ink/60", `Still waiting on ${listFormat(waiting)}. Slow servers can take up to half a minute to answer.`) : null);
+}
+
+/** The plain sentences under the hosting answer, from whatever has arrived. */
+function partialFacts(data) {
+  const box = el("div", "mt-4 max-w-3xl space-y-1 border-t border-rule pt-4 text-[15px] text-navy");
+  const line = data.website ? websiteSentence(data.website) : "";
+  if (line) add(box, el("p", "", line));
+  const r = data.registration;
+  if (r?.found && r.registrar) add(box, el("p", "", `Registered with ${r.registrar}${r.expires ? `, paid until ${fmtDate(r.expires)}` : ""}.`));
+  return box.children.length ? box : null;
+}
+
+/** Report skeleton with one slot per section; slots are filled one by one as results arrive. */
+const SLOTS = [
+  ["website", (d) => renderWebsite(d.website)], ["registration", (d) => renderRegistration(d.registration)],
+  ["dns", (d) => renderDNS(d.dns)], ["nameservers", (d) => renderNameservers(d.nameservers)],
+  ["spf", (d) => renderSPF(d.spf, d.domain)], ["dmarc", (d) => renderDMARC(d.dmarc, d.domain)],
+  ["dkim", (d) => renderDKIM(d.dkim, d.domain)], ["mail", (d) => renderMail(d.mail, d.providers)],
+  ["mail_security", (d) => renderMailSecurity(d.mail_security)], ["blocklists", (d) => renderBlocklists(d.blocklists)],
+  ["tls", (d) => renderTLS({ ...d.tls, caa: d.caa })],
+];
+const SLOT_TITLE = { website: "Website", registration: "Domain registration", dns: "DNS records", nameservers: "Nameservers", spf: "SPF",
+  dmarc: "DMARC", dkim: "DKIM", mail: "Mail servers", mail_security: "MTA-STS, TLS reporting and BIMI", blocklists: "Blocklists", tls: "SSL certificate" };
+function slotPlaceholder(key) {
+  const box = el("div", "h-full space-y-3 p-6 sm:p-8");
+  box.setAttribute("aria-busy", "true");
+  return add(box,
+    add(el("div", "mb-5 flex items-center gap-3"), el("h3", "semi-wide text-lg font-bold text-navy/50", SLOT_TITLE[key]),
+      el("span", "animate-pulse text-xs font-semibold text-sky", key === "blocklists" ? "Waiting for the IPs" : "Checking…")),
+    add(el("div", "animate-pulse space-y-3"), el("div", "h-3 w-full rounded-full bg-canvas"), el("div", "h-3 w-5/6 rounded-full bg-canvas"), el("div", "h-3 w-2/3 rounded-full bg-canvas")));
+}
+function buildSlots() {
+  $("sections").replaceChildren(bentoLayout((key) => slotPlaceholder(key)));
+}
+function fillSlot(key, data) {
+  const target = $(`slot-${key}`);
+  const render = SLOTS.find(([k]) => k === key)?.[1];
+  if (!target || !render || target.dataset.filled) return;
+  try { target.replaceChildren(render(data)); target.dataset.filled = "1"; paintTile(target); }
+  catch { /* needs data that only the final report has; it fills in then */ }
+}
+/** Read newline-delimited JSON from a streaming response, calling onEvent for each line. */
+async function readStream(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (line && onEvent(JSON.parse(line)) === false) { reader.cancel().catch(() => {}); return; }
+    }
+  }
+}
+
+/* =====================================================================
    Report flow
    ===================================================================== */
 function setLoading(on) {
@@ -2747,20 +2907,64 @@ async function analyze(domain) {
   $("report").classList.remove("hidden");
   $("sections").replaceChildren();
   renderHero({ domain }, { pending: true });
-  $("sections").replaceChildren(skeletonSections());
+  buildSlots();
   setLoading(true);
   const seq = ++reportSeq;  // if the logo is clicked meanwhile, this result is dropped
+  const stale = () => seq !== reportSeq;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let ticker = null;
   try {
-    const res = await fetch(`${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`, { signal: controller.signal });
-    const data = await res.json().catch(() => ({}));
-    if (seq !== reportSeq) return;
-    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}). Try again in a minute.`);
-    renderReport(data);
+    // 1. Streamed: each section appears as its check finishes.
+    let final = null, streamed = false;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/analyze/stream?domain=${encodeURIComponent(domain)}`, { signal: controller.signal });
+      if (res.status === 400) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.detail === "string" ? data.detail : "That domain doesn't look valid.");
+      }
+      if (res.ok && res.body && (res.headers.get("content-type") || "").includes("ndjson")) {
+        streamed = true;
+        const partial = { domain, partial: true };
+        streamStarted = Date.now();
+        await readStream(res, (ev) => {
+          if (stale()) return false;
+          if (ev.type === "start") {
+            partial.domain = ev.domain;
+            renderHero(partial);
+            ticker = setInterval(() => { if (!stale() && !final) renderHero(partial); }, 1000);
+          } else if (ev.type === "section") {
+            partial[ev.name] = ev.data;
+            renderHero(partial);
+            fillSlot(ev.name, partial);
+            if (ev.name === "caa" && partial.tls) fillSlot("tls", partial);
+          } else if (ev.type === "report") {
+            final = ev.report;
+            return false;
+          } else if (ev.type === "error") {
+            throw new Error(ev.detail);
+          }
+        });
+      }
+    } catch (err) {
+      if (err.name === "AbortError" || stale() || !(err instanceof TypeError) || streamed) throw err;
+      // network-level failure before anything arrived: fall through to the plain request
+    }
+    if (stale()) return;
+
+    // 2. Fallback: one plain request (older deployment, or a browser/proxy that can't stream).
+    if (!final) {
+      if (streamed) throw new Error("The report stopped part-way. Try again in a minute.");
+      const res = await fetch(`${API_BASE}/api/v1/analyze?domain=${encodeURIComponent(domain)}`, { signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      if (stale()) return;
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}). Try again in a minute.`);
+      final = data;
+    }
+    renderReport(final);
   } catch (err) {
-    if (seq !== reportSeq) return;
+    if (stale()) return;
     $("report").classList.add("hidden");
     $("intro").classList.remove("hidden");
     $("try-row").classList.remove("hidden");
@@ -2769,6 +2973,7 @@ async function analyze(domain) {
     else showError(err.message);
   } finally {
     clearTimeout(timer);
+    clearInterval(ticker);
     if (seq === reportSeq) setLoading(false);
   }
 }
