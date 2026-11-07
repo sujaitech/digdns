@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-  <!-- Same compiled stylesheet as the main page (build.py scans this file too) -->
+  <!-- The same compiled stylesheet as the main page (build.py scans this file too) -->
   <link rel="stylesheet" href="/app.css" />
   <style>
     body { background: #EEF1F7; color: #29284A; }
@@ -17,88 +17,130 @@
     .semi-wide { font-stretch: 112%; }
     .break-anywhere { overflow-wrap: anywhere; }
     .tabular { font-variant-numeric: tabular-nums; }
+    .card { background: #fff; border-radius: 1rem; box-shadow: 0 1px 2px rgba(38,34,98,.06), 0 6px 18px rgba(38,34,98,.06); }
+    /* Activity chart: one bar per day (or hour). The whole column is the hover target. */
+    .bar-col { position: relative; flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; cursor: default; outline: none; }
+    .bar-col .bar { width: 100%; background: #27AAE1; border-radius: 4px 4px 0 0; min-height: 0; transition: background-color .15s; }
+    .bar-col:hover .bar, .bar-col:focus-visible .bar { background: #262262; }
+    .bar-col:focus-visible { box-shadow: inset 0 0 0 2px #27AAE1; border-radius: 4px; }
+    .share { height: 6px; border-radius: 3px; background: #27AAE1; }
   </style>
 </head>
 <body class="min-h-screen bg-canvas font-sans text-ink antialiased">
-  <header class="bg-navy pb-20 text-white">
-    <div class="mx-auto max-w-6xl px-4 pt-7 sm:px-6">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <a href="/" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
-          <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
-            <circle cx="16" cy="16" r="15" fill="#27AAE1" />
-            <path d="M8.5 15.5l5 5.5L23.5 10" stroke="#262262" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          <span class="display text-2xl font-extrabold">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
-        </a>
-        <button id="signout" hidden class="text-sm text-white/70 underline underline-offset-4 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sign out</button>
+  <header class="bg-navy text-white">
+    <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-5 sm:px-6">
+      <a href="/" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
+        <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="15" fill="#27AAE1" />
+          <path d="M8.5 15.5l5 5.5L23.5 10" stroke="#262262" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="display text-2xl font-extrabold">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
+        <span class="ml-1 rounded-md bg-white/10 px-2 py-0.5 text-xs font-semibold text-white/80">Usage log</span>
+      </a>
+      <div id="controls" hidden class="flex flex-wrap items-center gap-2">
+        <label class="sr-only" for="days">Period</label>
+        <select id="days" class="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-sky [&>option]:text-navy">
+          <option value="1">Today</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option>
+        </select>
+        <button id="refresh" class="rounded-lg border border-white/20 px-3 py-2 text-sm font-semibold text-white hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Refresh</button>
+        <button id="signout" class="rounded-lg px-3 py-2 text-sm text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sign out</button>
       </div>
-      <h1 class="display mt-10 text-3xl font-bold sm:text-4xl">Usage log</h1>
-      <p class="mt-2 max-w-2xl text-white/75">Who used VdigDNS and what they checked. Only you can see this page’s data: it needs the admin password set in Vercel.</p>
     </div>
   </header>
 
-  <main class="mx-auto -mt-12 max-w-6xl space-y-6 px-4 pb-16 sm:px-6">
+  <main class="mx-auto max-w-6xl space-y-5 px-4 py-8 sm:px-6">
+    <!-- Setup checklist: shown when something isn't configured yet -->
+    <section id="setup" hidden class="card max-w-2xl p-6 sm:p-8">
+      <h1 class="semi-wide text-xl font-bold text-navy">Finish setting up the usage log</h1>
+      <p class="mt-1 text-[14px] text-ink/70">This page reads the live server’s settings. Fix the red items, redeploy, then reload this page.</p>
+      <ul id="setup-list" class="mt-5 space-y-4"></ul>
+      <button id="setup-recheck" class="mt-6 rounded-lg bg-navy px-5 py-2.5 text-sm font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Check again</button>
+    </section>
+
     <!-- Sign in -->
-    <form id="signin" class="max-w-lg rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
-      <label for="token" class="semi-wide text-lg font-bold text-navy">Admin password</label>
-      <p class="mt-1 text-[14px] text-ink/70">The <code class="font-mono text-[13px]">ADMIN_TOKEN</code> value from Vercel → Settings → Environment Variables.</p>
-      <div class="mt-4 flex flex-col gap-3 sm:flex-row">
-        <input id="token" type="password" required autocomplete="current-password"
-               class="min-w-0 flex-1 rounded-lg border border-rule px-3 py-2.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
-        <button class="rounded-lg bg-navy px-6 py-2.5 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Show log</button>
+    <form id="signin" hidden class="card mx-auto mt-6 max-w-md p-6 sm:p-8" autocomplete="off">
+      <h1 class="semi-wide text-xl font-bold text-navy">Sign in to the usage log</h1>
+      <p class="mt-1 text-[14px] text-ink/70">Use the <code class="font-mono text-[13px]">ADMIN_TOKEN</code> value you set in Vercel.</p>
+      <label for="token" class="mt-5 block text-sm font-semibold text-navy">Admin password</label>
+      <div class="mt-1.5 flex rounded-lg border border-rule focus-within:border-sky focus-within:ring-4 focus-within:ring-sky/20">
+        <input id="token" type="password" required autocomplete="current-password" class="min-w-0 flex-1 rounded-l-lg px-3 py-2.5 font-mono text-navy outline-none" />
+        <button type="button" id="reveal" class="rounded-r-lg px-3 text-sm text-blue hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Show</button>
       </div>
+      <label class="mt-3 flex items-center gap-2 text-[14px] text-ink/80">
+        <input id="remember" type="checkbox" class="h-4 w-4 accent-sky" /> Remember me on this device
+      </label>
+      <button class="mt-5 w-full rounded-lg bg-navy px-6 py-3 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Show the log</button>
       <p id="signin-error" role="alert" class="mt-3 hidden text-[14px] text-fail"></p>
     </form>
 
-    <!-- Log -->
-    <div id="log" hidden class="space-y-6">
-      <div class="flex flex-wrap items-center gap-3">
-        <label class="sr-only" for="days">Period</label>
-        <select id="days" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
-          <option value="1">Today</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option>
-        </select>
-        <label class="sr-only" for="tool">Tool</label>
-        <select id="tool" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
-          <option value="">All tools</option><option value="report">Domain report</option><option value="propagation">Propagation</option>
-          <option value="whois">Registration</option><option value="dkim">DKIM selector</option><option value="blocklist">Blocklist IP</option>
-        </select>
-        <label class="sr-only" for="q">Search</label>
-        <input id="q" type="search" placeholder="Filter by IP, domain, country or browser"
-               class="min-w-0 flex-1 rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20 sm:max-w-sm" />
-        <button id="refresh" class="rounded-lg border border-sky bg-white px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Refresh</button>
+    <!-- Dashboard -->
+    <div id="dash" hidden class="space-y-5">
+      <div class="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h1 class="display text-3xl font-bold text-navy">Who’s using VdigDNS</h1>
+          <p id="updated" class="mt-1 text-[13px] text-ink/60"></p>
+        </div>
         <button id="csv" class="rounded-lg border border-sky bg-white px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Download CSV</button>
       </div>
 
       <div id="tiles" class="grid grid-cols-2 gap-4 lg:grid-cols-4"></div>
 
       <div class="grid gap-4 lg:grid-cols-12">
-        <section class="min-w-0 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)] lg:col-span-7">
-          <h2 class="semi-wide text-lg font-bold text-navy">Visitors</h2>
-          <p class="text-[13px] text-ink/60">Click one to see only their checks.</p>
-          <ol id="top-ips" class="mt-4 space-y-1"></ol>
+        <section class="card min-w-0 p-6 lg:col-span-8">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="semi-wide text-lg font-bold text-navy" id="chart-title">Checks per day</h2>
+            <p id="chart-peak" class="text-[13px] text-ink/60"></p>
+          </div>
+          <div class="relative mt-4">
+            <div id="chart" class="flex h-44 items-end gap-[3px] border-b border-rule" role="list" aria-label="Checks over time"></div>
+            <div id="chart-tip" hidden class="pointer-events-none absolute z-10 -translate-x-1/2 rounded-lg bg-navy px-2.5 py-1.5 text-[12px] whitespace-nowrap text-white shadow-lg"></div>
+            <div id="chart-axis" class="mt-1.5 flex gap-[3px] text-[11px] text-ink/50"></div>
+          </div>
         </section>
-        <section class="min-w-0 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)] lg:col-span-5">
-          <h2 class="semi-wide text-lg font-bold text-navy">Most checked</h2>
-          <p class="text-[13px] text-ink/60">Domains, IPs and selectors.</p>
-          <ol id="top-targets" class="mt-4 space-y-1"></ol>
+        <section class="card min-w-0 p-6 lg:col-span-4">
+          <h2 class="semi-wide text-lg font-bold text-navy">Tools used</h2>
+          <ul id="tools" class="mt-4 space-y-3"></ul>
         </section>
       </div>
 
-      <section class="min-w-0 rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)]">
-        <div class="flex flex-wrap items-baseline justify-between gap-2 p-6 pb-3">
-          <h2 class="semi-wide text-lg font-bold text-navy">Every check</h2>
-          <p id="shown" class="text-[13px] text-ink/60"></p>
+      <div class="grid gap-4 lg:grid-cols-12">
+        <section class="card min-w-0 p-6 lg:col-span-7">
+          <h2 class="semi-wide text-lg font-bold text-navy">Visitors</h2>
+          <p class="text-[13px] text-ink/60">By IP address. Click one to see only their checks.</p>
+          <ul id="visitors" class="mt-3 space-y-0.5"></ul>
+        </section>
+        <section class="card min-w-0 p-6 lg:col-span-5">
+          <h2 class="semi-wide text-lg font-bold text-navy">Most checked</h2>
+          <p class="text-[13px] text-ink/60">Click one to see who checked it.</p>
+          <ul id="targets" class="mt-3 space-y-0.5"></ul>
+        </section>
+      </div>
+
+      <section class="card min-w-0">
+        <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-t-2xl border-b border-rule bg-white/95 p-4 backdrop-blur sm:px-6">
+          <h2 class="semi-wide mr-auto text-lg font-bold text-navy">Every check</h2>
+          <label class="sr-only" for="q">Search</label>
+          <input id="q" type="search" placeholder="Search IP, domain, place, browser"
+                 class="w-full min-w-0 rounded-lg border border-rule px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20 sm:w-72" />
+          <label class="sr-only" for="tool">Tool</label>
+          <select id="tool" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+            <option value="">All tools</option>
+          </select>
+          <button id="clear" hidden class="rounded-lg px-2 py-2 text-sm text-blue underline underline-offset-4 hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Clear filters</button>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full min-w-[46rem] text-left text-[13px]">
-            <thead class="border-y border-rule bg-canvas/60 text-ink/60">
-              <tr><th class="px-6 py-2 font-semibold">Time</th><th class="px-3 py-2 font-semibold">Visitor</th><th class="px-3 py-2 font-semibold">Location</th>
+          <table class="w-full min-w-[44rem] text-left text-[13px]">
+            <thead class="bg-canvas/60 text-ink/60">
+              <tr><th class="px-6 py-2 font-semibold">When</th><th class="px-3 py-2 font-semibold">Visitor</th>
                   <th class="px-3 py-2 font-semibold">Tool</th><th class="px-3 py-2 font-semibold">Checked</th><th class="px-3 py-2 pr-6 font-semibold">Browser</th></tr>
             </thead>
             <tbody id="rows" class="divide-y divide-rule/70"></tbody>
           </table>
         </div>
-        <p id="more" class="hidden p-4 text-center text-[13px] text-ink/60"></p>
+        <div class="flex flex-wrap items-center justify-between gap-2 border-t border-rule px-6 py-3">
+          <p id="shown" class="text-[13px] text-ink/60"></p>
+          <button id="more" hidden class="rounded-lg border border-sky px-3 py-1.5 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Show 100 more</button>
+        </div>
       </section>
       <p id="note" class="text-[13px] text-ink/60"></p>
     </div>
@@ -106,125 +148,271 @@
 
 <script>
 "use strict";
+/* Everything from the log is shown with textContent: domains and browsers are typed by visitors. */
 const $ = (id) => document.getElementById(id);
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
-const TOOL_NAME = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist IP" };
+const store = {
+  get(k) { try { return sessionStorage.getItem(k) ?? localStorage.getItem(k); } catch { return null; } },
+  set(k, v, keep) { try { (keep ? localStorage : sessionStorage).setItem(k, v); } catch { /* storage blocked */ } },
+  del(k) { try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch { /* fine */ } },
+};
+const TOOL = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist check" };
 const REGION = (() => { try { return new Intl.DisplayNames(undefined, { type: "region" }); } catch { return null; } })();
-const country = (c) => { try { return c ? REGION?.of(c) || c : ""; } catch { return c || ""; } };
-const place = (e) => [e.city, country(e.country)].filter(Boolean).join(", ");
+const countryName = (c) => { try { return c ? REGION?.of(c) || c : ""; } catch { return c || ""; } };
+const place = (e) => [e.city, countryName(e.country)].filter(Boolean).join(", ");
 function browser(ua) {
   if (!ua) return "";
-  if (/curl|wget|python|httpie|go-http|node-fetch|axios|postman/i.test(ua)) return (ua.match(/^[\w.-]+/) || [ua])[0] + " (script)";
-  const b = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Other";
-  const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Mac OS X/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "";
+  if (/curl|wget|python|httpie|go-http|node-fetch|axios|postman|bot|spider/i.test(ua)) return `${(ua.match(/^[\w.-]+/) || ["Script"])[0]} (script or bot)`;
+  const b = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Mac OS X/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "";
   return os ? `${b} on ${os}` : b;
 }
+const rtf = (() => { try { return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }); } catch { return null; } })();
+function ago(t) {
+  const s = Math.round((new Date(t).getTime() - Date.now()) / 1000);
+  if (!rtf || Number.isNaN(s)) return t;
+  const a = Math.abs(s);
+  if (a < 60) return "just now";
+  if (a < 3600) return rtf.format(Math.round(s / 60), "minute");
+  if (a < 86400) return rtf.format(Math.round(s / 3600), "hour");
+  return rtf.format(Math.round(s / 86400), "day");
+}
+const fullTime = (t) => { const d = new Date(t); return Number.isNaN(d.getTime()) ? t : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" }); };
+const isDomain = (t) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(t);
+const reportLink = (target) => { const d = target.split(" ")[0].replace(/^.*\._domainkey\./, ""); return isDomain(d) ? `/?domain=${encodeURIComponent(d)}` : null; };
 
-let token = "";
-try { token = sessionStorage.getItem("vdig-admin") || ""; } catch { /* storage blocked: sign in each time */ }
-let entries = [];
+let token = store.get("vdig-admin") || "";
+let entries = [], fetchedAt = 0, limit = 100, timer = null;
+const lastSeen = Number(store.get("vdig-admin-seen") || 0);
 
-async function load() {
+/* ---------- Setup check ---------- */
+async function checkSetup() {
+  let h;
+  try { h = await (await fetch("/api/v1/health", { cache: "no-store" })).json(); } catch { h = null; }
+  const items = [];
+  if (!h) items.push([false, "The API didn’t answer", "Open /api/v1/health to see whether the site is up."]);
+  else if (!("usage_log" in h)) items.push([false, "The live main.py is older than this page", "Upload the new main.py to the top of the GitHub repo and wait for the deploy to finish."]);
+  else {
+    items.push([h.usage_log, "Database connected",
+      h.usage_log ? "Upstash Redis is connected, so checks are being logged." : "Vercel → your project → Storage → Create Database → Upstash for Redis → free plan → connect it to this project. Then redeploy."]);
+    items.push([h.admin_ready, "Admin password set (16 or more characters)",
+      h.admin_ready ? "ADMIN_TOKEN is set." : "Vercel → Settings → Environment Variables → add ADMIN_TOKEN for Production, at least 16 characters. A shorter value is ignored. Then redeploy (Deployments → ⋯ → Redeploy)."]);
+  }
+  const ready = items.every(([ok]) => ok);
+  $("setup").hidden = ready;
+  $("setup-list").replaceChildren(...items.map(([ok, title, help]) => {
+    const li = el("li", "grid grid-cols-[1.75rem_1fr] gap-2");
+    const mark = el("span", `mt-0.5 flex h-6 w-6 items-center justify-center rounded-full text-[13px] font-bold ${ok ? "bg-pass-tint text-pass" : "bg-fail-tint text-fail"}`, ok ? "✓" : "✕");
+    mark.setAttribute("aria-label", ok ? "Done" : "Not done");
+    const body = el("div");
+    body.append(el("p", "font-semibold text-navy", title), el("p", "mt-0.5 text-[14px] text-ink/70", help));
+    li.append(mark, body);
+    return li;
+  }));
+  return ready;
+}
+
+/* ---------- Load ---------- */
+async function load({ quiet = false } = {}) {
   const err = $("signin-error");
   err.classList.add("hidden");
   try {
     const res = await fetch(`/api/v1/admin/usage?days=${$("days").value}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(res.status === 404 ? "The usage log isn't switched on: set ADMIN_TOKEN (16+ characters) in Vercel, then redeploy." : data.detail || `HTTP ${res.status}`);
-    try { sessionStorage.setItem("vdig-admin", token); } catch { /* fine */ }
-    entries = data.entries || [];
-    $("note").textContent = `Entries are kept for ${data.retention_days} days, then deleted automatically. Checks answered from Vercel’s cache aren’t counted, and the header analyzer is never logged because it runs in the visitor’s browser.`;
-    $("signin").hidden = true; $("log").hidden = false; $("signout").hidden = false;
+    if (res.status === 503 || res.status === 404) { await checkSetup(); $("signin").hidden = true; return; }
+    if (!res.ok) throw new Error(res.status === 401 ? "That password isn’t right." : data.detail || `The server answered ${res.status}.`);
+    let kept = false;
+    try { kept = !!localStorage.getItem("vdig-admin"); } catch { /* storage blocked */ }
+    store.set("vdig-admin", token, $("remember").checked || kept);
+    entries = (data.entries || []).sort((a, b) => (a.t < b.t ? 1 : -1));
+    fetchedAt = Date.now();
+    $("note").textContent = `Kept for ${data.retention_days} days, then deleted automatically. Not counted: checks answered from Vercel’s cache, and the header analyzer (it runs in the visitor’s browser). Several people on one office network share an IP address.`;
+    $("signin").hidden = true; $("setup").hidden = true; $("dash").hidden = false; $("controls").hidden = false;
+    fillToolFilter();
     render();
+    clearInterval(timer);
+    timer = setInterval(() => { if (!document.hidden) load({ quiet: true }); }, 60000);
   } catch (e) {
-    $("signin").hidden = false; $("log").hidden = true;
+    if (quiet) return;
+    $("dash").hidden = true; $("controls").hidden = true; $("signin").hidden = false;
     err.textContent = e instanceof TypeError ? "Couldn't reach the VdigDNS service." : e.message;
     err.classList.remove("hidden");
   }
 }
 
+/* ---------- Render ---------- */
+const filters = () => ({ q: $("q").value.trim().toLowerCase(), tool: $("tool").value });
 function filtered() {
-  const q = $("q").value.trim().toLowerCase(), tool = $("tool").value;
+  const { q, tool } = filters();
   return entries.filter((e) => (!tool || e.tool === tool) &&
-    (!q || [e.ip, e.target, e.country, country(e.country), e.city, browser(e.ua)].some((v) => (v || "").toLowerCase().includes(q))));
+    (!q || [e.ip, e.target, e.country, countryName(e.country), e.city, browser(e.ua)].some((v) => (v || "").toLowerCase().includes(q))));
 }
-function counts(list, key) {
+function group(list, key) {
   const m = new Map();
-  list.forEach((e) => { const k = key(e); if (!k) return; const c = m.get(k) || { n: 0, last: e }; c.n++; if (e.t > c.last.t) c.last = e; m.set(k, c); });
+  list.forEach((e) => { const k = key(e); if (!k) return; const g = m.get(k) || { n: 0, last: e, ips: new Set() }; g.n++; g.ips.add(e.ip); if (e.t > g.last.t) g.last = e; m.set(k, g); });
   return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
 }
-function tileBox(label, value, sub) {
-  const box = el("div", "rounded-2xl bg-white p-5 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)]");
-  box.append(el("div", "display tabular text-3xl font-extrabold text-navy", value), el("div", "mt-1 text-[13px] font-semibold text-ink/70", label));
+function fillToolFilter() {
+  const sel = $("tool"), current = sel.value;
+  const used = [...new Set(entries.map((e) => e.tool))];
+  sel.replaceChildren(el("option", "", "All tools"), ...used.map((t) => { const o = el("option", "", TOOL[t] || t); o.value = t; return o; }));
+  sel.firstChild.value = "";
+  sel.value = used.includes(current) ? current : "";
+}
+function tile(value, label, sub, accent) {
+  const box = el("div", "card p-5");
+  box.append(el("div", `display tabular text-3xl font-extrabold ${accent ? "text-blue" : "text-navy"}`, value), el("div", "mt-1 text-[13px] font-semibold text-ink/70", label));
   if (sub) box.append(el("div", "mt-0.5 text-[12px] text-ink/50", sub));
   return box;
 }
+function shareRow(label, sub, n, max, onClick, mono) {
+  const li = el("li");
+  const btn = el(onClick ? "button" : "div", "block w-full rounded-lg px-2 py-2 text-left hover:bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+  const top = el("div", "flex items-baseline justify-between gap-3");
+  const name = el("span", "min-w-0");
+  name.append(el("span", `${mono ? "font-mono text-[13px]" : "text-[14px]"} break-anywhere font-semibold text-navy`, label));
+  if (sub) name.append(el("span", "ml-2 text-[12px] text-ink/60", sub));
+  top.append(name, el("span", "tabular shrink-0 text-[13px] font-semibold text-ink/70", String(n)));
+  const track = el("div", "mt-1.5 h-1.5 rounded-full bg-canvas");
+  const fill = el("div", "share");
+  fill.style.width = `${Math.max(2, Math.round((n / max) * 100))}%`;
+  track.append(fill);
+  btn.append(top, track);
+  if (onClick) btn.addEventListener("click", onClick);
+  li.append(btn);
+  return li;
+}
+function renderChart(list) {
+  const days = Number($("days").value), hourly = days === 1;
+  const buckets = [];
+  const now = new Date();
+  if (hourly) {
+    for (let h = 0; h < 24; h++) { const d = new Date(now); d.setHours(h, 0, 0, 0); buckets.push({ start: d, label: `${String(h).padStart(2, "0")}:00`, n: 0, ips: new Set() }); }
+  } else {
+    for (let i = days - 1; i >= 0; i--) { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); buckets.push({ start: d, label: d.toLocaleDateString(undefined, { day: "numeric", month: "short" }), n: 0, ips: new Set() }); }
+  }
+  list.forEach((e) => {
+    const t = new Date(e.t);
+    const b = hourly ? (t.toDateString() === now.toDateString() ? buckets[t.getHours()] : null)
+                     : buckets.find((x) => t >= x.start && t < new Date(x.start.getTime() + 86400000));
+    if (b) { b.n++; b.ips.add(e.ip); }
+  });
+  const max = Math.max(1, ...buckets.map((b) => b.n));
+  const peak = buckets.reduce((a, b) => (b.n > a.n ? b : a), buckets[0]);
+  $("chart-title").textContent = hourly ? "Checks per hour today" : "Checks per day";
+  $("chart-peak").textContent = peak.n ? `Busiest: ${peak.label}, ${peak.n} check${peak.n === 1 ? "" : "s"}` : "No checks in this period";
+  const tip = $("chart-tip"), chart = $("chart");
+  chart.replaceChildren(...buckets.map((b) => {
+    const col = el("div", "bar-col");
+    col.tabIndex = 0;
+    col.setAttribute("role", "listitem");
+    const text = `${b.label}: ${b.n} check${b.n === 1 ? "" : "s"}${b.n ? `, ${b.ips.size} visitor${b.ips.size === 1 ? "" : "s"}` : ""}`;
+    col.setAttribute("aria-label", text);
+    const bar = el("div", "bar");
+    bar.style.height = b.n ? `max(4px, ${(b.n / max) * 100}%)` : "0";
+    col.append(bar);
+    const show = () => {
+      tip.textContent = text; tip.hidden = false;
+      const c = chart.getBoundingClientRect(), r = col.getBoundingClientRect();
+      tip.style.left = `${Math.min(Math.max(r.left - c.left + r.width / 2, 60), c.width - 60)}px`;
+      tip.style.top = `${Math.max(0, c.height - (b.n / max) * c.height - 36)}px`;
+    };
+    col.addEventListener("mouseenter", show); col.addEventListener("focus", show);
+    col.addEventListener("mouseleave", () => (tip.hidden = true)); col.addEventListener("blur", () => (tip.hidden = true));
+    return col;
+  }));
+  const every = hourly ? 6 : days <= 7 ? 1 : 5;
+  $("chart-axis").replaceChildren(...buckets.map((b, i) => el("div", "min-w-0 flex-1 truncate text-center", i % every === 0 ? b.label : "")));
+}
 function render() {
   const list = filtered();
-  const ips = counts(list, (e) => e.ip), targets = counts(list, (e) => e.target), countries = counts(list, (e) => e.country);
+  const { q, tool } = filters();
+  $("clear").hidden = !q && !tool;
+  const visitors = group(list, (e) => e.ip), targets = group(list, (e) => e.target), tools = group(list, (e) => e.tool);
+  const fresh = lastSeen ? list.filter((e) => new Date(e.t).getTime() > lastSeen).length : 0;
+  const people = group(list, (e) => e.country);
   $("tiles").replaceChildren(
-    tileBox("Checks", list.length.toLocaleString()),
-    tileBox("Visitors (IP addresses)", ips.length.toLocaleString(), "Several people behind one office network share an IP"),
-    tileBox("Different things checked", targets.length.toLocaleString()),
-    tileBox("Top country", countries[0] ? country(countries[0][0]) : "—", countries[0] ? `${countries[0][1].n} checks` : ""));
+    tile(list.length.toLocaleString(), "Checks"),
+    tile(visitors.length.toLocaleString(), "Visitors", "Different IP addresses"),
+    tile(group(list, (e) => e.target.split(" ")[0]).length.toLocaleString(), "Domains and IPs checked"),
+    lastSeen ? tile(fresh.toLocaleString(), "New since your last visit", new Date(lastSeen).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }), fresh > 0)
+             : tile(people[0] ? countryName(people[0][0]) : "—", "Top country", people[0] ? `${people[0][1].n} checks` : ""));
+  renderChart(list);
 
-  $("top-ips").replaceChildren(...ips.slice(0, 12).map(([ip, c]) => {
-    const who = el("span", "min-w-0");
-    who.append(el("span", "font-mono text-[13px] font-semibold text-navy", ip),
-               el("span", "ml-2 text-[12px] text-ink/60", [place(c.last), browser(c.last.ua)].filter(Boolean).join(", ")));
-    const btn = el("button", "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 rounded-lg px-2 py-1.5 text-left hover:bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
-    btn.append(who, el("span", "tabular text-[13px] font-semibold text-navy", `${c.n} check${c.n === 1 ? "" : "s"}`));
-    btn.addEventListener("click", () => { $("q").value = ip; render(); });
-    const li = el("li");
-    li.append(btn);
-    return li;
-  }));
-  if (!ips.length) $("top-ips").replaceChildren(el("li", "text-[14px] text-ink/60", "No checks in this period."));
+  const tmax = Math.max(1, ...tools.map(([, g]) => g.n));
+  $("tools").replaceChildren(...(tools.length ? tools.map(([t, g]) => shareRow(TOOL[t] || t, null, g.n, tmax, () => { $("tool").value = t; render(); }))
+                                              : [el("li", "text-[14px] text-ink/60", "Nothing yet.")]));
+  const vmax = Math.max(1, ...visitors.map(([, g]) => g.n));
+  $("visitors").replaceChildren(...(visitors.length ? visitors.slice(0, 8).map(([ip, g]) =>
+      shareRow(ip, [place(g.last), browser(g.last.ua), `last ${ago(g.last.t)}`].filter(Boolean).join(", "), g.n, vmax, () => { $("q").value = ip; render(); }, true))
+    : [el("li", "text-[14px] text-ink/60", "No checks in this period.")]));
+  const dmax = Math.max(1, ...targets.map(([, g]) => g.n));
+  $("targets").replaceChildren(...(targets.length ? targets.slice(0, 8).map(([t, g]) =>
+      shareRow(t, `${g.ips.size} visitor${g.ips.size === 1 ? "" : "s"}`, g.n, dmax, () => { $("q").value = t; render(); }, true))
+    : [el("li", "text-[14px] text-ink/60", "Nothing yet.")]));
 
-  $("top-targets").replaceChildren(...targets.slice(0, 12).map(([t, c]) => {
-    const li = el("li", "grid grid-cols-[1fr_auto] items-baseline gap-x-3 px-2 py-1.5");
-    li.append(el("span", "min-w-0 break-anywhere font-mono text-[13px] text-navy", t), el("span", "tabular text-[13px] font-semibold text-ink/70", String(c.n)));
-    return li;
-  }));
-
-  const LIMIT = 500;
-  $("rows").replaceChildren(...list.slice(0, LIMIT).map((e) => {
-    const tr = el("tr", "align-top");
-    const when = new Date(e.t);
-    tr.append(
-      el("td", "tabular whitespace-nowrap px-6 py-2 text-ink/70", Number.isNaN(when.getTime()) ? e.t : when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })),
-      el("td", "whitespace-nowrap px-3 py-2 font-mono font-semibold text-navy", e.ip || "—"),
-      el("td", "px-3 py-2 text-ink/70", place(e) || "—"),
-      el("td", "whitespace-nowrap px-3 py-2 text-ink/70", TOOL_NAME[e.tool] || e.tool),
-      el("td", "break-anywhere px-3 py-2 font-mono text-navy", e.target),
-      el("td", "px-3 py-2 pr-6 text-ink/60", browser(e.ua)));
-    tr.lastChild.title = e.ua || "";
+  $("rows").replaceChildren(...list.slice(0, limit).map((e) => {
+    const tr = el("tr", "align-top hover:bg-canvas/50");
+    const isNew = lastSeen && new Date(e.t).getTime() > lastSeen;
+    const when = el("td", "whitespace-nowrap px-6 py-2.5 text-ink/70");
+    if (isNew) when.append(el("span", "mr-1.5 inline-block h-2 w-2 rounded-full bg-sky align-middle", null));
+    when.append(document.createTextNode(ago(e.t)));
+    when.title = fullTime(e.t);
+    const who = el("td", "px-3 py-2.5");
+    const ipBtn = el("button", "font-mono font-semibold text-navy hover:text-blue focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", e.ip || "—");
+    ipBtn.addEventListener("click", () => { $("q").value = e.ip; render(); });
+    who.append(ipBtn, el("div", "text-[12px] text-ink/60", place(e) || "Unknown location"));
+    const what = el("td", "break-anywhere px-3 py-2.5 font-mono");
+    const href = (e.tool === "report" || e.tool === "whois") ? reportLink(e.target) : null;
+    if (href) { const a = el("a", "text-navy underline decoration-rule underline-offset-4 hover:text-blue hover:decoration-sky", e.target); a.href = href; a.target = "_blank"; a.rel = "noopener"; a.title = "Open this report in a new tab"; what.append(a); }
+    else what.append(el("span", "text-navy", e.target));
+    const ua = el("td", "px-3 py-2.5 pr-6 text-ink/60", browser(e.ua));
+    ua.title = e.ua || "";
+    tr.append(when, who, el("td", "whitespace-nowrap px-3 py-2.5 text-ink/70", TOOL[e.tool] || e.tool), what, ua);
     return tr;
   }));
-  $("shown").textContent = `${list.length.toLocaleString()} of ${entries.length.toLocaleString()} shown, newest first`;
-  $("more").classList.toggle("hidden", list.length <= LIMIT);
-  $("more").textContent = `Showing the newest ${LIMIT}. Filter, or download the CSV for all ${list.length.toLocaleString()}.`;
+  if (!list.length) {
+    const td = el("td", "px-6 py-10 text-center text-[14px] text-ink/60", entries.length ? "Nothing matches these filters." : "No checks in this period yet. Run one on the main site, then press Refresh.");
+    td.colSpan = 5;
+    const tr = el("tr"); tr.append(td); $("rows").replaceChildren(tr);
+  }
+  $("shown").textContent = `${Math.min(limit, list.length).toLocaleString()} of ${list.length.toLocaleString()} shown, newest first`;
+  $("more").hidden = list.length <= limit;
+  $("updated").textContent = `Updated ${ago(fetchedAt)}. Refreshes every minute while this tab is open.`;
 }
 
 function downloadCsv() {
-  // A leading = + - @ would make spreadsheet apps run the cell as a formula; prefix those with '
+  // A leading = + - @ would make a spreadsheet run the cell as a formula, so those get a ' in front.
   const cell = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-  const lines = [["time_utc", "ip", "country", "region", "city", "tool", "checked", "user_agent"].join(",")]
-    .concat(filtered().map((e) => [e.t, e.ip, e.country, e.region, e.city, e.tool, e.target, e.ua].map(cell).join(",")));
+  const lines = [["time_utc", "ip", "country", "region", "city", "tool", "checked", "browser", "user_agent"].join(",")]
+    .concat(filtered().map((e) => [e.t, e.ip, e.country, e.region, e.city, e.tool, e.target, browser(e.ua), e.ua].map(cell).join(",")));
   const url = URL.createObjectURL(new Blob([lines.join("\r\n")], { type: "text/csv" }));
   const a = Object.assign(document.createElement("a"), { href: url, download: `vdigdns-usage-${new Date().toISOString().slice(0, 10)}.csv` });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/* ---------- Wire up ---------- */
 $("signin").addEventListener("submit", (e) => { e.preventDefault(); token = $("token").value.trim(); load(); });
-$("signout").addEventListener("click", () => { token = ""; try { sessionStorage.removeItem("vdig-admin"); } catch {} location.reload(); });
-$("days").addEventListener("change", load);
-$("refresh").addEventListener("click", load);
-$("tool").addEventListener("change", render);
-$("q").addEventListener("input", render);
+$("reveal").addEventListener("click", () => { const t = $("token"); const show = t.type === "password"; t.type = show ? "text" : "password"; $("reveal").textContent = show ? "Hide" : "Show"; });
+$("signout").addEventListener("click", () => { store.del("vdig-admin"); location.reload(); });
+$("setup-recheck").addEventListener("click", start);
+$("days").addEventListener("change", () => load());
+$("refresh").addEventListener("click", () => load());
+$("tool").addEventListener("change", () => { limit = 100; render(); });
+$("q").addEventListener("input", () => { limit = 100; render(); });
+$("clear").addEventListener("click", () => { $("q").value = ""; $("tool").value = ""; render(); });
+$("more").addEventListener("click", () => { limit += 100; render(); });
 $("csv").addEventListener("click", downloadCsv);
-if (token) load();
+// Remember when you last looked, so the next visit can mark what's new.
+addEventListener("pagehide", () => { if (fetchedAt) store.set("vdig-admin-seen", String(fetchedAt), true); });
+
+async function start() {
+  const ready = await checkSetup();
+  if (!ready) { $("signin").hidden = true; $("dash").hidden = true; return; }
+  if (token) load(); else $("signin").hidden = false;
+}
+start();
 </script>
 </body>
 </html>
