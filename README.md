@@ -86,7 +86,8 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | File | Purpose |
 |---|---|
 | `main.py` | The whole backend. Vercel finds the FastAPI `app` here. |
-| `build.py` | Runs before every deploy: the tests, then compiles `public/app.css`. A failing test stops the deploy. |
+| `build.py` | Runs before every deploy: the tests (a failing or missing test stops the deploy), then compiles `public/app.css`. |
+| `public/app.css` | The compiled stylesheet. Kept in the repo because Vercel serves `public/` as uploaded: upload a new one whenever `index.html` or `admin.html` changes. |
 | `tests/test_vdigdns.py` | The tests (no network needed): `python -m unittest discover -s tests -v` |
 | `public/admin.html` | The usage log page (not linked from the site; `noindex`) |
 | `requirements.txt` | Python dependencies |
@@ -104,7 +105,7 @@ uvicorn main:app --reload --port 8000
 ```
 
 - **API:** open http://127.0.0.1:8000/api/v1/analyze?domain=example.com
-- **CSS:** run `python build.py` once to create `public/app.css` (opening `index.html` without it falls back to Tailwind's browser build).
+- **CSS:** run `python build.py` to rebuild `public/app.css` (opening `index.html` without it falls back to Tailwind's browser build).
 - **Frontend:** set `const API_BASE = "http://127.0.0.1:8000";` near the top of the script in `public/index.html`, then open the file in a browser. Set it back to `""` before deploying.
 
 ## Configuration (optional environment variables)

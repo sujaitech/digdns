@@ -2534,7 +2534,7 @@ async def admin_usage(request: Request, response: Response, days: int = Query(7,
     """Usage log for the owner. Needs the ADMIN_TOKEN as a Bearer token."""
     response.headers["Cache-Control"] = "no-store"
     if len(ADMIN_TOKEN) < 16:
-        raise HTTPException(status_code=404, detail="Not found.")
+        raise HTTPException(status_code=503, detail="ADMIN_TOKEN isn't set in Vercel, or is shorter than 16 characters. Set it for Production, then redeploy.")
     given = request.headers.get("authorization", "")
     if not secrets.compare_digest(given.encode(), f"Bearer {ADMIN_TOKEN}".encode()):
         raise HTTPException(status_code=401, detail="That admin password isn't right.")
@@ -2560,7 +2560,10 @@ async def admin_usage(request: Request, response: Response, days: int = Query(7,
 @app.get("/api/v1/health")
 async def health() -> dict:
     """Used by you (and uptime monitors) to confirm the API is alive."""
-    return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "time": datetime.now(timezone.utc).isoformat()}
+    # usage_log / admin_ready only say whether the log is set up (never any secret), so the admin page
+    # can tell the owner exactly which setup step is missing.
+    return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "usage_log": usage_enabled(),
+            "admin_ready": len(ADMIN_TOKEN) >= 16, "time": datetime.now(timezone.utc).isoformat()}
 
 
 def _set_cdn_cache(response: Response, seconds: int) -> None:

@@ -1,8 +1,10 @@
 """Vercel runs this before every deploy (see "buildCommand" in vercel.json).
 
 1. Runs the tests. If any fail, the build stops and the site keeps its previous version.
-2. Compiles the Tailwind CSS the page uses into public/app.css, so visitors download one small
+2. Compiles the Tailwind CSS the pages use into public/app.css, so visitors download one small
    stylesheet instead of generating the CSS in their browser on every visit.
+   public/app.css is ALSO kept in the repository, because Vercel serves public/ files as uploaded;
+   upload the new app.css whenever index.html or admin.html changes.
 
 The colour and font tokens live in public/index.html (the <style type="text/tailwindcss"> block),
 so there is only one place to change them.
@@ -31,11 +33,20 @@ def extract_theme(html: str) -> str:
 
 
 def run_tests() -> None:
+    """Load the test file directly, so a missing or misplaced file fails loudly instead of "0 tests, all fine"."""
     print("build: running tests…", flush=True)
-    suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
+    path = ROOT / "tests" / "test_vdigdns.py"
+    if not path.exists():
+        raise SystemExit("build: tests/test_vdigdns.py is missing from the repository, so this version was NOT deployed. "
+                         "Upload it into a folder named tests at the top of the repo.")
+    sys.path.insert(0, str(path.parent))
+    suite = unittest.defaultTestLoader.loadTestsFromName("test_vdigdns")
     result = unittest.TextTestRunner(verbosity=1, stream=sys.stdout).run(suite)
+    if result.testsRun == 0:
+        raise SystemExit("build: no tests ran, so this version was NOT deployed.")
     if not result.wasSuccessful():
         raise SystemExit("build: tests failed, so this version was NOT deployed. The previous version is still live.")
+    print(f"build: {result.testsRun} tests passed", flush=True)
 
 
 def standalone_tailwind() -> list[str]:
@@ -63,11 +74,11 @@ def build_css() -> None:
     html = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
     WORK.mkdir(exist_ok=True)
     source = WORK / "input.css"
-    source.write_text('@import "tailwindcss";\n@source "../public";\n\n' + extract_theme(html) + "\n", encoding="utf-8")
+    # source(none): scan only public/, so the output is the same on every machine
+    source.write_text('@import "tailwindcss" source(none);\n@source "../public";\n\n' + extract_theme(html) + "\n", encoding="utf-8")
     print("build: compiling Tailwind CSS…", flush=True)
-    # npx first (Node is on Vercel's build machines); if that fails for any reason, the standalone binary.
-    ok = bool(shutil.which("npx")) and compile_with(["npx", "--yes", f"@tailwindcss/cli@{TAILWIND_VERSION}"], source)
-    if not ok and not compile_with(standalone_tailwind(), source):
+    # Tailwind's standalone binary bundles everything it needs (npx couldn't resolve the import on Vercel).
+    if not compile_with(standalone_tailwind(), source):
         raise SystemExit("build: couldn't compile the CSS; not deploying.")
     css = OUT.read_text(encoding="utf-8")
     # A few classes the page can't work without: if they're missing, something went wrong.
