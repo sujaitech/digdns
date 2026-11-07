@@ -50,7 +50,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 import dns.asyncquery
@@ -67,7 +67,7 @@ from cryptography import x509
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtensionOID, NameOID
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -123,6 +123,14 @@ SMTP_HELO_NAME = os.getenv("SMTP_HELO_NAME") or socket.getfqdn()
 SMTP_MAIL_FROM = os.getenv("SMTP_MAIL_FROM") or f"postmaster@{SMTP_HELO_NAME}"
 
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "true").lower() == "true"
+
+# Usage log (optional). Connect an Upstash Redis database to the Vercel project (Storage tab) and
+# Vercel adds these variables itself. Without them, nothing is logged.
+USAGE_DB_URL = (os.getenv("KV_REST_API_URL") or os.getenv("UPSTASH_REDIS_REST_URL") or "").rstrip("/")
+USAGE_DB_TOKEN = os.getenv("KV_REST_API_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")                    # password for /admin.html (16+ characters)
+LOG_RETENTION_DAYS = max(1, int(_env_float("LOG_RETENTION_DAYS", 30)))
+LOG_PER_DAY_MAX = 20000                                        # entries kept per day, newest first
 
 
 # =============================================================================
@@ -2462,6 +2470,93 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/index.html")
 
 
+# ---- Usage log -------------------------------------------------------------------------------
+# One line per check: time, tool, what was checked, and the visitor's IP, approximate location
+# (from Vercel's edge headers) and browser. Stored in Redis as one list per day, deleted
+# automatically after LOG_RETENTION_DAYS. Logging never delays or breaks a check.
+def usage_enabled() -> bool:
+    return bool(USAGE_DB_URL and USAGE_DB_TOKEN)
+
+
+def client_info(request: Request) -> dict:
+    h = request.headers
+    # On Vercel, x-real-ip / x-forwarded-for are set by Vercel's edge (a visitor can't fake them).
+    ip = (h.get("x-real-ip") or (h.get("x-forwarded-for") or "").split(",")[0]).strip()
+    if not ip and request.client:
+        ip = request.client.host
+    return {
+        "ip": ip[:45],
+        "country": (h.get("x-vercel-ip-country") or "")[:2],
+        "region": (h.get("x-vercel-ip-country-region") or "")[:10],
+        "city": urllib.parse.unquote(h.get("x-vercel-ip-city") or "")[:60],
+        "ua": (h.get("user-agent") or "")[:200],
+    }
+
+
+def _redis_pipeline(commands: list[list[str]]) -> list:
+    """Run Redis commands through Upstash's REST API (no extra Python package needed)."""
+    req = urllib.request.Request(f"{USAGE_DB_URL}/pipeline", data=json.dumps(commands).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {USAGE_DB_TOKEN}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=4) as res:  # noqa: S310 - fixed https URL from config
+        return json.loads(res.read())
+
+
+def usage_entry(request: Request, tool: str, target: str) -> dict:
+    return {"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "tool": tool, "target": str(target)[:300], **client_info(request)}
+
+
+async def _write_usage(entry: dict) -> None:
+    key = f"vdig:use:{entry['t'][:10]}"
+    try:
+        await asyncio.wait_for(run_in_threadpool(_redis_pipeline, [
+            ["LPUSH", key, json.dumps(entry, separators=(",", ":"))],
+            ["LTRIM", key, "0", str(LOG_PER_DAY_MAX - 1)],
+            ["EXPIRE", key, str(LOG_RETENTION_DAYS * 86400)],
+        ]), timeout=4)
+    except Exception as exc:  # noqa: BLE001 - a logging failure must never affect the check
+        log.warning("Usage log write failed: %s", type(exc).__name__)
+
+
+def track(request: Request, tool: str, target: str) -> asyncio.Task | None:
+    """Start writing a usage entry in the background; await the returned task before the response ends."""
+    if not usage_enabled():
+        return None
+    return asyncio.ensure_future(_write_usage(usage_entry(request, tool, target)))
+
+
+async def tracked(task: asyncio.Task | None) -> None:
+    if task:
+        await task
+
+
+@app.get("/api/v1/admin/usage", include_in_schema=False)
+async def admin_usage(request: Request, response: Response, days: int = Query(7, ge=1, le=90)) -> dict:
+    """Usage log for the owner. Needs the ADMIN_TOKEN as a Bearer token."""
+    response.headers["Cache-Control"] = "no-store"
+    if len(ADMIN_TOKEN) < 16:
+        raise HTTPException(status_code=404, detail="Not found.")
+    given = request.headers.get("authorization", "")
+    if not secrets.compare_digest(given.encode(), f"Bearer {ADMIN_TOKEN}".encode()):
+        raise HTTPException(status_code=401, detail="That admin password isn't right.")
+    if not usage_enabled():
+        raise HTTPException(status_code=503, detail="Usage logging isn't set up: connect an Upstash Redis database to the Vercel project.")
+    days = min(days, LOG_RETENTION_DAYS)
+    today = datetime.now(timezone.utc).date()
+    keys = [f"vdig:use:{(today - timedelta(days=i)).isoformat()}" for i in range(days)]
+    try:
+        replies = await asyncio.wait_for(run_in_threadpool(_redis_pipeline, [["LRANGE", k, "0", "-1"] for k in keys]), timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Couldn't read the usage log ({type(exc).__name__}).") from exc
+    entries = []
+    for reply in replies:
+        for raw in (reply or {}).get("result") or []:
+            try:
+                entries.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+    return {"days": days, "retention_days": LOG_RETENTION_DAYS, "count": len(entries), "entries": entries}
+
+
 @app.get("/api/v1/health")
 async def health() -> dict:
     """Used by you (and uptime monitors) to confirm the API is alive."""
@@ -2581,33 +2676,44 @@ def _report_had_error(result: dict) -> bool:
 
 
 @app.get("/api/v1/analyze")
-async def analyze(response: Response,
+async def analyze(request: Request, response: Response,
                   domain: str = Query(..., min_length=1, max_length=300, description="Domain to analyse, e.g. example.com")) -> dict:
     """The full report as one JSON document (waits for every check)."""
     clean = _clean_domain(domain)
+    logged = track(request, "report", clean)
     cached = _cache_get(clean)
     if cached:
+        await tracked(logged)
         _set_cdn_cache(response, 300)
         return {**cached, "cached": True}
     result = await build_report(clean)
+    await tracked(logged)
     # A section that errored (timeout etc.) may succeed on retry, so cache those results briefly.
     _set_cdn_cache(response, 30 if _report_had_error(result) else 300)
     return result
 
 
 @app.get("/api/v1/analyze/stream")
-async def analyze_stream(domain: str = Query(..., min_length=1, max_length=300)) -> StreamingResponse:
+async def analyze_stream(request: Request, domain: str = Query(..., min_length=1, max_length=300)) -> StreamingResponse:
     """The same report, streamed as newline-delimited JSON so a page can show each section as it finishes.
 
     Lines: {"type": "section", "name": "dns", "data": {...}} as each check completes (before the
     cross-checks), then one {"type": "report", "report": {...}} with the final, cross-checked report.
     """
     clean = _clean_domain(domain)  # bad input fails here with a normal 400, before streaming starts
+    logged = track(request, "report", clean)
 
     def line(obj: dict) -> bytes:
         return (json.dumps(jsonable_encoder(obj), separators=(",", ":")) + "\n").encode()
 
     async def events():
+        try:
+            async for chunk in report_events():
+                yield chunk
+        finally:
+            await tracked(logged)
+
+    async def report_events():
         cached = _cache_get(clean)
         if cached:
             yield line({"type": "report", "report": {**cached, "cached": True}})
@@ -2641,7 +2747,7 @@ async def analyze_stream(domain: str = Query(..., min_length=1, max_length=300))
 
 
 @app.get("/api/v1/propagation")
-async def propagation(response: Response,
+async def propagation(request: Request, response: Response,
                       domain: str = Query(..., min_length=1, max_length=300),
                       type: str = Query("A", alias="type", max_length=8)) -> dict:
     """Ask 8 public resolvers and the authoritative nameserver for one record type, and compare."""
@@ -2649,16 +2755,19 @@ async def propagation(response: Response,
     rtype = type.upper()
     if rtype not in PROPAGATION_TYPES:
         raise HTTPException(status_code=400, detail=f"Record type must be one of {', '.join(PROPAGATION_TYPES)}.")
+    logged = track(request, "propagation", f"{clean} {rtype}")
     try:
         res = await asyncio.wait_for(check_propagation(clean, rtype), timeout=20)
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="The resolvers took too long to answer. Try again.") from exc
+    finally:
+        await tracked(logged)
     _set_cdn_cache(response, 30)  # short: people re-run this while waiting for a change to spread
     return res
 
 
 @app.get("/api/v1/blocklist")
-async def blocklist(response: Response, ip: str = Query(..., min_length=7, max_length=45)) -> dict:
+async def blocklist(request: Request, response: Response, ip: str = Query(..., min_length=7, max_length=45)) -> dict:
     """Check one IPv4 address against the IP blocklists."""
     try:
         addr = ipaddress.ip_address(ip.strip())
@@ -2668,22 +2777,26 @@ async def blocklist(response: Response, ip: str = Query(..., min_length=7, max_l
         raise HTTPException(status_code=400, detail="Only IPv4 addresses can be checked: almost no blocklists cover IPv6.")
     if not is_public_ip(str(addr)):
         raise HTTPException(status_code=400, detail="That's a private or reserved address, so it can't be on a public blocklist.")
+    logged = track(request, "blocklist", str(addr))
     res = await _safe("Blocklists", analyze_blocklists(None, [(str(addr), ["Checked IP"])]), 15)
+    await tracked(logged)
     _set_cdn_cache(response, 30 if res.get("status") == "error" else 600)
     return {"ip": str(addr), **res}
 
 
 @app.get("/api/v1/whois")
-async def whois(response: Response, domain: str = Query(..., min_length=1, max_length=300)) -> dict:
+async def whois(request: Request, response: Response, domain: str = Query(..., min_length=1, max_length=300)) -> dict:
     """Registration details only (RDAP, falling back to classic WHOIS)."""
     clean = _clean_domain(domain)
+    logged = track(request, "whois", clean)
     res = await _safe("Registration", analyze_registration(clean), 30)
+    await tracked(logged)
     _set_cdn_cache(response, 30 if res.get("status") == "error" else 3600)  # registry data changes rarely
     return {"domain": clean, **res}
 
 
 @app.get("/api/v1/dkim")
-async def dkim_selector(response: Response,
+async def dkim_selector(request: Request, response: Response,
                         domain: str = Query(..., min_length=1, max_length=300),
                         selector: str = Query(..., min_length=1, max_length=63)) -> dict:
     """Check one DKIM selector, e.g. the s= value from an email's DKIM-Signature header."""
@@ -2691,10 +2804,13 @@ async def dkim_selector(response: Response,
     selector = selector.strip().lower()
     if not _SELECTOR_RE.match(selector):
         raise HTTPException(status_code=400, detail="A selector is letters, digits, dots, hyphens or underscores, like 'selector1'.")
+    logged = track(request, "dkim", f"{selector}._domainkey.{clean}")
     try:
         found = await asyncio.wait_for(check_dkim_selector(clean, selector), timeout=10)
     except (DNSLookupError, asyncio.TimeoutError) as exc:
         raise HTTPException(status_code=502, detail=f"Lookup failed: {exc or 'timed out'}") from exc
+    finally:
+        await tracked(logged)
     _set_cdn_cache(response, 300)
     return {"domain": clean, "selector": selector, "found": bool(found), "key": found}
 

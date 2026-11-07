@@ -47,9 +47,10 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
 | Backend | Python 3.12, FastAPI (async) |
 | Libraries | `dnspython` for DNS, `cryptography` for certificates and DKIM keys, standard library for TLS, HTTP and WHOIS |
 | Hosting | Vercel serverless function, plus Vercel CDN caching |
-| Frontend | One HTML file: vanilla JavaScript and Tailwind CSS v4 (browser build), no build step |
+| Frontend | One HTML file: vanilla JavaScript, Tailwind CSS v4 compiled to `public/app.css` at deploy time |
 | DNS | Cloudflare (`dig` CNAME → Vercel, DNS only) |
-| Deploys | Push to GitHub `main` and Vercel deploys automatically |
+| Deploys | Push to GitHub `main`; Vercel runs `build.py` (tests, then CSS), then deploys |
+| Usage log | Upstash Redis (free tier, via Vercel Storage), optional |
 
 ### Design decisions
 
@@ -60,7 +61,8 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
 - **SSRF protection.** The API never connects to private, loopback or reserved IPs. The website check follows redirects itself and re-checks every hop's address, so a redirect can't lead it into an internal network.
 - **XSS protection.** DNS data is controlled by the domain owner, so the page inserts every value as text (`textContent`), never as HTML.
 - **CDN caching.** Reports are cached at the edge for 5 minutes (30 s if a check errored). Registration-only lookups are cached for 1 hour.
-- **Privacy.** Registrant contact details are never returned, even when a registry publishes them.
+- **Privacy.** Registrant contact details are never returned, even when a registry publishes them. The usage log stores the checked domain or IP, the visitor's IP, approximate location (from Vercel's edge) and browser, for 30 days; the footer says so. Header and bounce analysis is never logged, because it never leaves the browser.
+- **Tests guard every deploy.** `build.py` runs the tests first; if one fails, Vercel keeps the previous version live.
 - **SMTP handshake is off.** Vercel blocks outbound port 25. The code is kept and can be switched on with `ENABLE_SMTP=true` on a host that allows port 25.
 
 ## API
@@ -77,15 +79,19 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `/api/v1/blocklist?ip=203.0.113.5` | Check one IPv4 address against the IP blocklists |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
 | `/api/v1/health` | Liveness check |
+| `/api/v1/admin/usage?days=7` | The usage log. Needs `Authorization: Bearer <ADMIN_TOKEN>`; the page for it is `/admin.html`. Hidden (404) until `ADMIN_TOKEN` is set. |
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `main.py` | The whole backend. Vercel finds the FastAPI `app` here. |
+| `build.py` | Runs before every deploy: the tests, then compiles `public/app.css`. A failing test stops the deploy. |
+| `tests/test_vdigdns.py` | The tests (no network needed): `python -m unittest discover -s tests -v` |
+| `public/admin.html` | The usage log page (not linked from the site; `noindex`) |
 | `requirements.txt` | Python dependencies |
 | `public/index.html` | The whole frontend |
-| `vercel.json` | Allows the function to run for up to 60 s |
+| `vercel.json` | Sets the build command, and lets the function run for up to 60 s |
 | `.python-version` | Python 3.12 |
 
 ## Run it locally
@@ -98,6 +104,7 @@ uvicorn main:app --reload --port 8000
 ```
 
 - **API:** open http://127.0.0.1:8000/api/v1/analyze?domain=example.com
+- **CSS:** run `python build.py` once to create `public/app.css` (opening `index.html` without it falls back to Tailwind's browser build).
 - **Frontend:** set `const API_BASE = "http://127.0.0.1:8000";` near the top of the script in `public/index.html`, then open the file in a browser. Set it back to `""` before deploying.
 
 ## Configuration (optional environment variables)
@@ -111,6 +118,9 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 | `TLS_TIMEOUT` | `8` | Seconds for the certificate check |
 | `ENABLE_DOCS` | `true` | Serve `/api/v1/docs` |
 | `ENABLE_SMTP` | `false` | SMTP handshake (needs outbound port 25, which Vercel blocks) |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | none | Added by Vercel when you connect an Upstash Redis database. Without them nothing is logged. (`UPSTASH_REDIS_REST_URL` / `_TOKEN` also work.) |
+| `ADMIN_TOKEN` | none | Password for `/admin.html`, at least 16 characters. Without it the log can't be read. |
+| `LOG_RETENTION_DAYS` | `30` | Days before log entries are deleted. If you change it, change "30 days" in the page footer too. |
 
 ## Deploying changes
 
@@ -122,7 +132,6 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 
 ## Known limitations
 
-- **Tailwind runs as the browser build,** which generates CSS on each page load. A one-time compiled stylesheet would load faster.
 - **DKIM under a custom selector** can only be found with the selector check, by reading `s=` from a sent email's `DKIM-Signature` header.
 - **Technology detection** reads the home page only and uses signature matching. Sites can hide their software, and bot-protection pages (Cloudflare and similar) limit what's visible.
 - **Hosting detection** names the network or CDN. Behind Cloudflare and similar CDNs, the real origin server can't be seen from DNS.
