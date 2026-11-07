@@ -13,10 +13,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
 
-  <!-- Tailwind CSS v4 browser build (pinned version) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.11"></script>
+  <!-- Styles: public/app.css is compiled from Tailwind by build.py on every deploy.
+       If it's missing (e.g. opening this file locally), fall back to Tailwind's browser build. -->
+  <link rel="stylesheet" href="/app.css"
+        onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.11';document.head.appendChild(s)" />
 
-  <!-- Design tokens: each --color-x becomes bg-x / text-x / border-x classes -->
+  <!-- Design tokens: each --color-x becomes bg-x / text-x / border-x classes.
+       build.py reads this block when compiling app.css, so change colours and fonts here. -->
   <style type="text/tailwindcss">
     @theme {
       --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
@@ -417,7 +420,7 @@
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source and doesn’t store the domains you check.
+    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere.
   </footer>
 
 <script>
@@ -1022,7 +1025,7 @@ function renderTLS(t) {
    ===================================================================== */
 const BENTO = [
   { title: "Website and security", hint: "Is the site up, what it’s built with, and its certificate",
-    tiles: [["website", "lg:col-span-8"], ["tls", "lg:col-span-4"]] },
+    tiles: [["website", "lg:col-span-7"], ["tls", "lg:col-span-5"]] },
   { title: "Domain and DNS", hint: "Who it’s registered with, and whether its DNS is healthy",
     tiles: [["registration", "lg:col-span-5"], ["nameservers", "lg:col-span-7"], ["dns", "lg:col-span-12"]] },
   { title: "Email", hint: "Whether mail from this domain is trusted and delivered",

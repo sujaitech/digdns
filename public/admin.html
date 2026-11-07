@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>VdigDNS usage log</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23262262'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='%2327AAE1' stroke-width='3.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <!-- Same compiled stylesheet as the main page (build.py scans this file too) -->
+  <link rel="stylesheet" href="/app.css" />
+  <style>
+    body { background: #EEF1F7; color: #29284A; }
+    .display { font-stretch: 125%; letter-spacing: -0.01em; }
+    .semi-wide { font-stretch: 112%; }
+    .break-anywhere { overflow-wrap: anywhere; }
+    .tabular { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="min-h-screen bg-canvas font-sans text-ink antialiased">
+  <header class="bg-navy pb-20 text-white">
+    <div class="mx-auto max-w-6xl px-4 pt-7 sm:px-6">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <a href="/" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
+          <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="16" cy="16" r="15" fill="#27AAE1" />
+            <path d="M8.5 15.5l5 5.5L23.5 10" stroke="#262262" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span class="display text-2xl font-extrabold">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
+        </a>
+        <button id="signout" hidden class="text-sm text-white/70 underline underline-offset-4 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sign out</button>
+      </div>
+      <h1 class="display mt-10 text-3xl font-bold sm:text-4xl">Usage log</h1>
+      <p class="mt-2 max-w-2xl text-white/75">Who used VdigDNS and what they checked. Only you can see this page’s data: it needs the admin password set in Vercel.</p>
+    </div>
+  </header>
+
+  <main class="mx-auto -mt-12 max-w-6xl space-y-6 px-4 pb-16 sm:px-6">
+    <!-- Sign in -->
+    <form id="signin" class="max-w-lg rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
+      <label for="token" class="semi-wide text-lg font-bold text-navy">Admin password</label>
+      <p class="mt-1 text-[14px] text-ink/70">The <code class="font-mono text-[13px]">ADMIN_TOKEN</code> value from Vercel → Settings → Environment Variables.</p>
+      <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+        <input id="token" type="password" required autocomplete="current-password"
+               class="min-w-0 flex-1 rounded-lg border border-rule px-3 py-2.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20" />
+        <button class="rounded-lg bg-navy px-6 py-2.5 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Show log</button>
+      </div>
+      <p id="signin-error" role="alert" class="mt-3 hidden text-[14px] text-fail"></p>
+    </form>
+
+    <!-- Log -->
+    <div id="log" hidden class="space-y-6">
+      <div class="flex flex-wrap items-center gap-3">
+        <label class="sr-only" for="days">Period</label>
+        <select id="days" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+          <option value="1">Today</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option>
+        </select>
+        <label class="sr-only" for="tool">Tool</label>
+        <select id="tool" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+          <option value="">All tools</option><option value="report">Domain report</option><option value="propagation">Propagation</option>
+          <option value="whois">Registration</option><option value="dkim">DKIM selector</option><option value="blocklist">Blocklist IP</option>
+        </select>
+        <label class="sr-only" for="q">Search</label>
+        <input id="q" type="search" placeholder="Filter by IP, domain, country or browser"
+               class="min-w-0 flex-1 rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20 sm:max-w-sm" />
+        <button id="refresh" class="rounded-lg border border-sky bg-white px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Refresh</button>
+        <button id="csv" class="rounded-lg border border-sky bg-white px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Download CSV</button>
+      </div>
+
+      <div id="tiles" class="grid grid-cols-2 gap-4 lg:grid-cols-4"></div>
+
+      <div class="grid gap-4 lg:grid-cols-12">
+        <section class="min-w-0 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)] lg:col-span-7">
+          <h2 class="semi-wide text-lg font-bold text-navy">Visitors</h2>
+          <p class="text-[13px] text-ink/60">Click one to see only their checks.</p>
+          <ol id="top-ips" class="mt-4 space-y-1"></ol>
+        </section>
+        <section class="min-w-0 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)] lg:col-span-5">
+          <h2 class="semi-wide text-lg font-bold text-navy">Most checked</h2>
+          <p class="text-[13px] text-ink/60">Domains, IPs and selectors.</p>
+          <ol id="top-targets" class="mt-4 space-y-1"></ol>
+        </section>
+      </div>
+
+      <section class="min-w-0 rounded-2xl bg-white shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)]">
+        <div class="flex flex-wrap items-baseline justify-between gap-2 p-6 pb-3">
+          <h2 class="semi-wide text-lg font-bold text-navy">Every check</h2>
+          <p id="shown" class="text-[13px] text-ink/60"></p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full min-w-[46rem] text-left text-[13px]">
+            <thead class="border-y border-rule bg-canvas/60 text-ink/60">
+              <tr><th class="px-6 py-2 font-semibold">Time</th><th class="px-3 py-2 font-semibold">Visitor</th><th class="px-3 py-2 font-semibold">Location</th>
+                  <th class="px-3 py-2 font-semibold">Tool</th><th class="px-3 py-2 font-semibold">Checked</th><th class="px-3 py-2 pr-6 font-semibold">Browser</th></tr>
+            </thead>
+            <tbody id="rows" class="divide-y divide-rule/70"></tbody>
+          </table>
+        </div>
+        <p id="more" class="hidden p-4 text-center text-[13px] text-ink/60"></p>
+      </section>
+      <p id="note" class="text-[13px] text-ink/60"></p>
+    </div>
+  </main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+const TOOL_NAME = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist IP" };
+const REGION = (() => { try { return new Intl.DisplayNames(undefined, { type: "region" }); } catch { return null; } })();
+const country = (c) => { try { return c ? REGION?.of(c) || c : ""; } catch { return c || ""; } };
+const place = (e) => [e.city, country(e.country)].filter(Boolean).join(", ");
+function browser(ua) {
+  if (!ua) return "";
+  if (/curl|wget|python|httpie|go-http|node-fetch|axios|postman/i.test(ua)) return (ua.match(/^[\w.-]+/) || [ua])[0] + " (script)";
+  const b = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Other";
+  const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Mac OS X/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "";
+  return os ? `${b} on ${os}` : b;
+}
+
+let token = "";
+try { token = sessionStorage.getItem("vdig-admin") || ""; } catch { /* storage blocked: sign in each time */ }
+let entries = [];
+
+async function load() {
+  const err = $("signin-error");
+  err.classList.add("hidden");
+  try {
+    const res = await fetch(`/api/v1/admin/usage?days=${$("days").value}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(res.status === 404 ? "The usage log isn't switched on: set ADMIN_TOKEN (16+ characters) in Vercel, then redeploy." : data.detail || `HTTP ${res.status}`);
+    try { sessionStorage.setItem("vdig-admin", token); } catch { /* fine */ }
+    entries = data.entries || [];
+    $("note").textContent = `Entries are kept for ${data.retention_days} days, then deleted automatically. Checks answered from Vercel’s cache aren’t counted, and the header analyzer is never logged because it runs in the visitor’s browser.`;
+    $("signin").hidden = true; $("log").hidden = false; $("signout").hidden = false;
+    render();
+  } catch (e) {
+    $("signin").hidden = false; $("log").hidden = true;
+    err.textContent = e instanceof TypeError ? "Couldn't reach the VdigDNS service." : e.message;
+    err.classList.remove("hidden");
+  }
+}
+
+function filtered() {
+  const q = $("q").value.trim().toLowerCase(), tool = $("tool").value;
+  return entries.filter((e) => (!tool || e.tool === tool) &&
+    (!q || [e.ip, e.target, e.country, country(e.country), e.city, browser(e.ua)].some((v) => (v || "").toLowerCase().includes(q))));
+}
+function counts(list, key) {
+  const m = new Map();
+  list.forEach((e) => { const k = key(e); if (!k) return; const c = m.get(k) || { n: 0, last: e }; c.n++; if (e.t > c.last.t) c.last = e; m.set(k, c); });
+  return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
+}
+function tileBox(label, value, sub) {
+  const box = el("div", "rounded-2xl bg-white p-5 shadow-[0_1px_2px_rgba(38,34,98,.06),0_6px_18px_rgba(38,34,98,.06)]");
+  box.append(el("div", "display tabular text-3xl font-extrabold text-navy", value), el("div", "mt-1 text-[13px] font-semibold text-ink/70", label));
+  if (sub) box.append(el("div", "mt-0.5 text-[12px] text-ink/50", sub));
+  return box;
+}
+function render() {
+  const list = filtered();
+  const ips = counts(list, (e) => e.ip), targets = counts(list, (e) => e.target), countries = counts(list, (e) => e.country);
+  $("tiles").replaceChildren(
+    tileBox("Checks", list.length.toLocaleString()),
+    tileBox("Visitors (IP addresses)", ips.length.toLocaleString(), "Several people behind one office network share an IP"),
+    tileBox("Different things checked", targets.length.toLocaleString()),
+    tileBox("Top country", countries[0] ? country(countries[0][0]) : "—", countries[0] ? `${countries[0][1].n} checks` : ""));
+
+  $("top-ips").replaceChildren(...ips.slice(0, 12).map(([ip, c]) => {
+    const who = el("span", "min-w-0");
+    who.append(el("span", "font-mono text-[13px] font-semibold text-navy", ip),
+               el("span", "ml-2 text-[12px] text-ink/60", [place(c.last), browser(c.last.ua)].filter(Boolean).join(", ")));
+    const btn = el("button", "grid w-full grid-cols-[1fr_auto] items-baseline gap-x-3 rounded-lg px-2 py-1.5 text-left hover:bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+    btn.append(who, el("span", "tabular text-[13px] font-semibold text-navy", `${c.n} check${c.n === 1 ? "" : "s"}`));
+    btn.addEventListener("click", () => { $("q").value = ip; render(); });
+    const li = el("li");
+    li.append(btn);
+    return li;
+  }));
+  if (!ips.length) $("top-ips").replaceChildren(el("li", "text-[14px] text-ink/60", "No checks in this period."));
+
+  $("top-targets").replaceChildren(...targets.slice(0, 12).map(([t, c]) => {
+    const li = el("li", "grid grid-cols-[1fr_auto] items-baseline gap-x-3 px-2 py-1.5");
+    li.append(el("span", "min-w-0 break-anywhere font-mono text-[13px] text-navy", t), el("span", "tabular text-[13px] font-semibold text-ink/70", String(c.n)));
+    return li;
+  }));
+
+  const LIMIT = 500;
+  $("rows").replaceChildren(...list.slice(0, LIMIT).map((e) => {
+    const tr = el("tr", "align-top");
+    const when = new Date(e.t);
+    tr.append(
+      el("td", "tabular whitespace-nowrap px-6 py-2 text-ink/70", Number.isNaN(when.getTime()) ? e.t : when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })),
+      el("td", "whitespace-nowrap px-3 py-2 font-mono font-semibold text-navy", e.ip || "—"),
+      el("td", "px-3 py-2 text-ink/70", place(e) || "—"),
+      el("td", "whitespace-nowrap px-3 py-2 text-ink/70", TOOL_NAME[e.tool] || e.tool),
+      el("td", "break-anywhere px-3 py-2 font-mono text-navy", e.target),
+      el("td", "px-3 py-2 pr-6 text-ink/60", browser(e.ua)));
+    tr.lastChild.title = e.ua || "";
+    return tr;
+  }));
+  $("shown").textContent = `${list.length.toLocaleString()} of ${entries.length.toLocaleString()} shown, newest first`;
+  $("more").classList.toggle("hidden", list.length <= LIMIT);
+  $("more").textContent = `Showing the newest ${LIMIT}. Filter, or download the CSV for all ${list.length.toLocaleString()}.`;
+}
+
+function downloadCsv() {
+  // A leading = + - @ would make spreadsheet apps run the cell as a formula; prefix those with '
+  const cell = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+  const lines = [["time_utc", "ip", "country", "region", "city", "tool", "checked", "user_agent"].join(",")]
+    .concat(filtered().map((e) => [e.t, e.ip, e.country, e.region, e.city, e.tool, e.target, e.ua].map(cell).join(",")));
+  const url = URL.createObjectURL(new Blob([lines.join("\r\n")], { type: "text/csv" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: `vdigdns-usage-${new Date().toISOString().slice(0, 10)}.csv` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+$("signin").addEventListener("submit", (e) => { e.preventDefault(); token = $("token").value.trim(); load(); });
+$("signout").addEventListener("click", () => { token = ""; try { sessionStorage.removeItem("vdig-admin"); } catch {} location.reload(); });
+$("days").addEventListener("change", load);
+$("refresh").addEventListener("click", load);
+$("tool").addEventListener("change", render);
+$("q").addEventListener("input", render);
+$("csv").addEventListener("click", downloadCsv);
+if (token) load();
+</script>
+</body>
+</html>
