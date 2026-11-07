@@ -51,7 +51,7 @@ import urllib.request
 import zlib
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import dns.asyncquery
 import dns.asyncresolver
@@ -68,8 +68,9 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtensionOID, NameOID
 from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -2483,16 +2484,12 @@ def _clean_domain(domain: str) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/v1/analyze")
-async def analyze(response: Response,
-                  domain: str = Query(..., min_length=1, max_length=300, description="Domain to analyse, e.g. example.com")) -> dict:
-    clean = _clean_domain(domain)
+ReportEmit = Callable[[str, dict], Awaitable[None]]
 
-    cached = _cache_get(clean)
-    if cached:
-        _set_cdn_cache(response, 300)
-        return {**cached, "cached": True}
 
+async def build_report(clean: str, emit: ReportEmit | None = None) -> dict:
+    """Run every check. If `emit` is given, each section is handed to it the moment it finishes
+    (used by the streaming endpoint so the page can fill in while slower checks are still running)."""
     started = time.monotonic()
     log.info("Analysing %s", clean)
 
@@ -2513,7 +2510,20 @@ async def analyze(response: Response,
         "tls": _safe("TLS", analyze_tls(clean), 25),
         "caa": _safe("CAA", analyze_caa(clean), 10),
     }
-    results = dict(zip(checks, await asyncio.gather(*checks.values())))
+    tasks = {asyncio.ensure_future(coro): name for name, coro in checks.items()}
+    results: dict[str, dict] = {}
+    pending = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                results[tasks[task]] = task.result()
+                if emit:
+                    await emit(tasks[task], results[tasks[task]])
+    finally:
+        for task in pending:  # only if we were cancelled (the visitor left mid-report)
+            task.cancel()
+
     dns_res, web_res, reg_res = results["dns"], results["website"], results["registration"]
     ns_res, hosting_res, spf_res = results["nameservers"], results["hosting"], results["spf"]
     dmarc_res, dkim_res, mail_res = results["dmarc"], results["dkim"], results["mail"]
@@ -2525,6 +2535,8 @@ async def analyze(response: Response,
 
     # Stage 2: blocklists need the IPs found above (website, MX, SPF senders)
     blocklist_res = await _safe("Blocklists", analyze_blocklists(clean, blocklist_targets(hosting_res, mail_res, spf_res)), 15)
+    if emit:
+        await emit("blocklists", blocklist_res)
 
     # CAA belongs with the certificate: show it in the SSL section and cross-check the issuer.
     tls_res["caa"] = caa_res
@@ -2561,10 +2573,71 @@ async def analyze(response: Response,
         "tls": tls_res,
     }
     _cache_set(clean, result)
-    # A section that errored (timeout etc.) may succeed on retry, so cache those results briefly.
-    had_error = any(isinstance(v, dict) and v.get("status") == "error" for v in result.values())
-    _set_cdn_cache(response, 30 if had_error else 300)
     return result
+
+
+def _report_had_error(result: dict) -> bool:
+    return any(isinstance(v, dict) and v.get("status") == "error" for v in result.values())
+
+
+@app.get("/api/v1/analyze")
+async def analyze(response: Response,
+                  domain: str = Query(..., min_length=1, max_length=300, description="Domain to analyse, e.g. example.com")) -> dict:
+    """The full report as one JSON document (waits for every check)."""
+    clean = _clean_domain(domain)
+    cached = _cache_get(clean)
+    if cached:
+        _set_cdn_cache(response, 300)
+        return {**cached, "cached": True}
+    result = await build_report(clean)
+    # A section that errored (timeout etc.) may succeed on retry, so cache those results briefly.
+    _set_cdn_cache(response, 30 if _report_had_error(result) else 300)
+    return result
+
+
+@app.get("/api/v1/analyze/stream")
+async def analyze_stream(domain: str = Query(..., min_length=1, max_length=300)) -> StreamingResponse:
+    """The same report, streamed as newline-delimited JSON so a page can show each section as it finishes.
+
+    Lines: {"type": "section", "name": "dns", "data": {...}} as each check completes (before the
+    cross-checks), then one {"type": "report", "report": {...}} with the final, cross-checked report.
+    """
+    clean = _clean_domain(domain)  # bad input fails here with a normal 400, before streaming starts
+
+    def line(obj: dict) -> bytes:
+        return (json.dumps(jsonable_encoder(obj), separators=(",", ":")) + "\n").encode()
+
+    async def events():
+        cached = _cache_get(clean)
+        if cached:
+            yield line({"type": "report", "report": {**cached, "cached": True}})
+            return
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def emit(name: str, data: dict) -> None:
+            await queue.put({"type": "section", "name": name, "data": data})
+
+        async def run() -> None:
+            try:
+                await queue.put({"type": "report", "report": await build_report(clean, emit)})
+            except Exception:  # noqa: BLE001 - never leave the stream hanging
+                log.exception("Streamed report failed for %s", clean)
+                await queue.put({"type": "error", "detail": "The report couldn't be completed. Try again."})
+
+        task = asyncio.create_task(run())
+        try:
+            yield line({"type": "start", "domain": clean})
+            while True:
+                item = await queue.get()
+                yield line(item)
+                if item["type"] != "section":
+                    break
+        finally:
+            if not task.done():  # the visitor closed the page: stop the checks
+                task.cancel()
+
+    return StreamingResponse(events(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/v1/propagation")

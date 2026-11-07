@@ -54,6 +54,7 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
 ### Design decisions
 
 - **Everything runs in parallel.** The report's twelve checks start together with `asyncio.gather`, so a report takes about as long as the slowest check (usually 1–3 s).
+- **Results stream in.** The page shows each section the moment its check finishes, with a live checklist of what's still running, instead of a blank wait for the slowest check. It's still one request per report, so the firewall rate limit is unaffected. If streaming fails, the page falls back to the plain endpoint. Closing the page mid-report stops the checks on the server.
 - **Every check has its own deadline.** If one part times out, the rest of the report still returns and that section shows "Error".
 - **"No record" is kept separate from "lookup failed".** A flaky resolver never shows up as a false "No SPF record".
 - **SSRF protection.** The API never connects to private, loopback or reserved IPs. The website check follows redirects itself and re-checks every hop's address, so a redirect can't lead it into an internal network.
@@ -68,7 +69,8 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 
 | Endpoint | Purpose |
 |---|---|
-| `/api/v1/analyze?domain=example.com` | The full report |
+| `/api/v1/analyze?domain=example.com` | The full report, in one JSON document |
+| `/api/v1/analyze/stream?domain=example.com` | The same report streamed as newline-delimited JSON: one `section` line per check as it finishes, then the final `report` line. The page uses this. |
 | `/api/v1/whois?domain=example.com` | Registration only (RDAP, falling back to WHOIS) |
 | `/api/v1/propagation?domain=www.example.com&type=A` | Compare 8 public resolvers and the authoritative nameserver |
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
