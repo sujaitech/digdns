@@ -2,7 +2,7 @@
 
 VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one report covering:
 
-- **Website:** whether it's up, response time, redirect path, HTTP/2, compression, security headers, and the software it's built with (CMS, framework, server, CDN, analytics).
+- **Website:** a screenshot of the home page (via Browserless, optional), whether it's up, response time, redirect path, HTTP/2, compression, security headers, and the software it's built with (CMS, framework, server, CDN, analytics).
 - **Registration:** registrar, created and expiry dates, registry locks, DNSSEC, and registry nameservers checked against live DNS. Uses RDAP, with classic WHOIS as a fallback. Registries that publish nothing online (such as .zw) are reported as such, not as errors.
 - **Hosting:** which server or network serves the website, from reverse DNS and IP ownership (AS number).
 - **DNS records:** A, AAAA, MX, TXT, CNAME, NS, SOA, CAA and common SRV names.
@@ -17,11 +17,12 @@ VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one r
 
 The report opens with a **What needs attention** list of every problem, worst first, and can be copied as plain text for tickets or email.
 
-Plus four tools:
+Plus five tools:
 
 - **Propagation:** compares resolvers with your authoritative nameserver, worldwide (one ISP resolver in each of up to 60 countries), in one chosen country, or just the 8 big public resolvers. Shows the percentage already updated, a summary per region, and flags domains whose answers legitimately vary by location (GeoDNS/CDNs).
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
+- **Email test:** a one-hour address to send a real email to. The report scores it out of 10 with every deduction listed: SPF, DKIM and DMARC (verified with `pyspf` and `dkimpy`), the sending server's reverse DNS and blocklists, a SpamAssassin score from Postmark's free SpamCheck API, and content checks (plain-text version, link shorteners, blocklisted link domains, unsubscribe headers). Needs Cloudflare Email Routing; see *Email test setup*.
 - **Headers & bounces:** paste a bounce (non-delivery report) to get the cause in plain English, who has to fix it and how, per recipient. It reads Exim, Postfix, Sendmail, qmail, Gmail, Microsoft 365 and standard RFC 3464 reports, explains the SMTP and enhanced status codes and the stage at which the mail was refused, and spots when several unrelated providers were all refused by one server (your own outgoing filter). Or paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
 
 Live at **https://dig.sujaiprojects.stream**
@@ -80,7 +81,11 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
 | `/api/v1/blocklist?ip=203.0.113.5` | Check one IPv4 address against the IP blocklists |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
-| `/api/v1/health` | Liveness check |
+| `/api/v1/health` | Liveness check, plus which optional features are set up |
+| `POST /api/v1/mailtest/new` | Create a one-hour test address |
+| `/api/v1/mailtest/{id}` | Poll a test: `waiting`, `analyzing` or `done` with the report |
+| `POST /api/v1/mailtest/inbound?id=` | Called only by the Cloudflare Worker (needs the shared secret) |
+| `/api/v1/screenshot?domain=` | JPEG of the home page (Browserless), cached at the edge for 6 hours |
 | `/api/v1/admin/usage?days=7` | The usage log. Needs `Authorization: Bearer <ADMIN_TOKEN>`; the page for it is `/admin.html`. Hidden (404) until `ADMIN_TOKEN` is set. |
 
 ## Files
@@ -91,6 +96,7 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `build.py` | Runs before every deploy: the tests (a failing or missing test stops the deploy), then compiles `public/app.css`. |
 | `public/app.css` | The compiled stylesheet. Kept in the repo because Vercel serves `public/` as uploaded: upload a new one whenever `index.html` or `admin.html` changes. |
 | `tests/test_vdigdns.py` | The tests (no network needed): `python -m unittest discover -s tests -v` |
+| `cloudflare/mail-test-worker.js` | The Cloudflare Email Worker for the email test (pasted into the Cloudflare dashboard; Vercel ignores it) |
 | `public/admin.html` | The usage log page (not linked from the site; `noindex`) |
 | `requirements.txt` | Python dependencies |
 | `public/index.html` | The whole frontend |
@@ -123,6 +129,10 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 | `ENABLE_SMTP` | `false` | SMTP handshake (needs outbound port 25, which Vercel blocks) |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | none | Added by Vercel when you connect an Upstash Redis database. Without them nothing is logged. (`UPSTASH_REDIS_REST_URL` / `_TOKEN` also work.) |
 | `ADMIN_TOKEN` | none | Password for `/admin.html`, at least 16 characters. Without it the log can't be read. |
+| `MAILTEST_ADDRESS` | none | Email test address: `test@check.example.com` (visitors get `test+<id>@…`) or `*@example.com` (catch-all on a main domain) |
+| `MAILTEST_SECRET` | none | Shared with the Worker's `VDIG_SECRET`, 24+ random characters |
+| `BROWSERLESS_TOKEN` | none | Browserless API token for website screenshots (free plan: 1,000 units a month) |
+| `SCREENSHOT_PER_DAY` | `30` | New screenshots per day across all visitors, to stay inside the free plan |
 | `LOG_RETENTION_DAYS` | `30` | Days before log entries are deleted. If you change it, change "30 days" in the page footer too. |
 
 ## Deploying changes
@@ -133,6 +143,15 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 2. Commit. Vercel redeploys in about a minute.
 3. If something breaks, go to **Vercel → Deployments**, pick the last good deployment, and click **Instant Rollback**.
 
+## Email test setup
+
+1. Pick a subdomain that receives no other mail, such as `check.example.com`. Email Routing must be switched on for the zone, which sets the main domain's MX records, so the main domain mustn't receive mail elsewhere either.
+2. Cloudflare → Workers & Pages → create a Worker, paste `cloudflare/mail-test-worker.js`, deploy. Add variables `VDIG_URL` (the site URL) and `VDIG_SECRET` (secret).
+3. Cloudflare → Email Routing: enable it, add the subdomain under Settings → Subdomains, turn on subaddressing, then create a custom address `test@check.example.com` with the action *Send to a Worker*.
+4. Vercel → Environment Variables: `MAILTEST_ADDRESS=test@check.example.com` and `MAILTEST_SECRET` (same value as `VDIG_SECRET`). The Redis database must be connected. Redeploy.
+
+Catch-all addresses only work on a main domain, not a subdomain, so the subdomain setup relies on subaddressing (`test+id@`). If that doesn't deliver, use a catch-all on a spare main domain and set `MAILTEST_ADDRESS=*@thatdomain`.
+
 ## Known limitations
 
 - **DKIM under a custom selector** can only be found with the selector check, by reading `s=` from a sent email's `DKIM-Signature` header.
@@ -140,6 +159,7 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 - **Hosting detection** names the network or CDN. Behind Cloudflare and similar CDNs, the real origin server can't be seen from DNS.
 - **Spamhaus and Barracuda aren't queried.** Spamhaus refuses lookups from cloud platforms such as AWS, where Vercel runs, and Barracuda needs registration. The report links to Spamhaus's own checker instead. Spamhaus's free Data Query Service (a key) could be added later.
 - **Blocklists cover IPv4 only;** almost no lists publish IPv6 data.
-- **No deliverability (inbox placement) test.** That needs real seed mailboxes at Gmail, Outlook and others.
+- **The email test can't measure inbox placement** (inbox vs spam folder at Gmail, Outlook and others). That needs real seed mailboxes there. Its score is VdigDNS's own rubric, not mail-tester's, and Postmark's SpamCheck API is free but may change or stop without notice.
+- **Screenshots use Browserless's free plan** (1,000 units a month). `SCREENSHOT_PER_DAY` caps new ones; repeats are served from Vercel's cache.
 - **Regional resolvers are volunteers' and ISPs' open resolvers** listed by public-dns.info. Only ones with 99%+ reliability, checked in the last 3 days, are used, and the list is refreshed twice a day (shared through the Redis database when connected), but any of them can go offline or misbehave. One odd result isn't proof of a problem.
 - **The big anycast resolvers answer from their site nearest to Vercel's region**, so they're shown separately from the country view. Everything is checked over IPv4 only.

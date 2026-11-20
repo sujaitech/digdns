@@ -134,6 +134,22 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")                    # password for /ad
 LOG_RETENTION_DAYS = max(1, int(_env_float("LOG_RETENTION_DAYS", 30)))
 LOG_PER_DAY_MAX = 20000                                        # entries kept per day, newest first
 
+# Email test (optional). Cloudflare Email Routing hands test emails to a small Worker
+# (cloudflare/mail-test-worker.js), which posts them here. Needs the Redis database too.
+#   MAILTEST_ADDRESS: "test@check.example.com" -> visitors get test+<id>@check.example.com (subaddressing)
+#                     "*@example.com"          -> visitors get <id>@example.com (catch-all on a main domain)
+MAILTEST_ADDRESS = os.getenv("MAILTEST_ADDRESS", "").strip().lower()
+MAILTEST_SECRET = os.getenv("MAILTEST_SECRET", "")             # shared with the Worker, 24+ characters
+MAILTEST_TTL = 3600                                            # a test address lives for an hour
+MAILTEST_PER_IP_DAY = 20                                       # test addresses per visitor per day
+MAILTEST_MAX_BYTES = 900_000                                   # stored size cap (headers are always kept)
+SPAMCHECK_URL = "https://spamcheck.postmarkapp.com/filter"     # Postmark's free SpamAssassin API
+
+# Website screenshots (optional): Browserless free plan, 1,000 units a month.
+BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "")
+BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "https://production-sfo.browserless.io").rstrip("/")
+SCREENSHOT_PER_DAY = int(_env_float("SCREENSHOT_PER_DAY", 30))  # new screenshots per day, all visitors (~900/month)
+
 
 # =============================================================================
 # 2. HELPERS
@@ -2624,7 +2640,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=ALLOWED_ORIGIN_REGEX,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
     allow_credentials=False,
     max_age=86400,
@@ -2735,13 +2751,375 @@ async def admin_usage(request: Request, response: Response, days: int = Query(7,
     return {"days": days, "retention_days": LOG_RETENTION_DAYS, "count": len(entries), "entries": entries}
 
 
+# ---- Redis helpers (Upstash REST) ------------------------------------------------------------
+async def redis(*commands: list[str], timeout: float = 5) -> list:
+    """Run Redis commands; returns each command's result (or raises)."""
+    replies = await asyncio.wait_for(run_in_threadpool(_redis_pipeline, [list(map(str, c)) for c in commands]), timeout)
+    out = []
+    for r in replies:
+        if isinstance(r, dict) and r.get("error"):
+            raise RuntimeError(r["error"])
+        out.append(r.get("result") if isinstance(r, dict) else r)
+    return out
+
+
+async def daily_counter(key: str, limit: int) -> bool:
+    """Count one use against a per-day limit. True if still within the limit (or Redis is unavailable)."""
+    if not usage_enabled():
+        return True
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        count, _ = await redis(["INCR", f"{key}:{day}"], ["EXPIRE", f"{key}:{day}", "90000"])
+        return int(count) <= limit
+    except Exception as exc:  # noqa: BLE001 - never block a visitor because the counter failed
+        log.warning("Rate counter failed: %s", type(exc).__name__)
+        return True
+
+
+# ---- Email test: send a real email, get a report ----------------------------------------------
+def mailtest_enabled() -> bool:
+    return bool(usage_enabled() and "@" in MAILTEST_ADDRESS and len(MAILTEST_SECRET) >= 24)
+
+
+def mailtest_address(test_id: str) -> str:
+    local, domain = MAILTEST_ADDRESS.split("@", 1)
+    return f"{test_id}@{domain}" if local == "*" else f"{local}+{test_id}@{domain}"
+
+
+def _org_domain(d: str | None) -> str | None:
+    """Registrable domain, approximately (mail.shop.co.uk -> shop.co.uk); good enough to compare senders."""
+    if not d:
+        return None
+    p = d.lower().rstrip(".").split(".")
+    if len(p) <= 2:
+        return ".".join(p)
+    n = 3 if len(p[-1]) == 2 and p[-2] in {"co", "com", "net", "org", "gov", "ac", "edu", "ne", "or", "go", "gob", "nic", "ltd", "plc", "biz"} else 2
+    return ".".join(p[-n:])
+
+
+def _addr_domain(value: str | None) -> str | None:
+    m = re.search(r"@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", value or "")
+    return m.group(1).lower().rstrip(".") if m else None
+
+
+def _sending_ip(msg: Any) -> tuple[str | None, str | None]:
+    """The IP and HELO name of the server that handed the email to Cloudflare (topmost external hop)."""
+    for value in msg.get_all("Received") or []:
+        v = " ".join(str(value).split())
+        m = re.search(r"\bfrom\s+(\S+)(.*?)\bby\s", v, re.I)
+        if not m:
+            continue
+        ips = re.findall(r"\[(?:IPv6:)?([0-9a-fA-F:.]+)\]", m.group(2)) or re.findall(r"\b((?:\d{1,3}\.){3}\d{1,3})\b", m.group(2))
+        for ip in ips:
+            try:
+                if is_public_ip(ip):
+                    return ip, m.group(1).strip("()")
+            except ValueError:
+                continue
+    return None, None
+
+
+def _spf_check(ip: str, mail_from: str, helo: str) -> tuple[str, str]:
+    import spf  # pyspf
+    result, explanation = spf.check2(i=ip, s=mail_from or f"postmaster@{helo}", h=helo or "unknown", timeout=10)
+    return result, explanation
+
+
+def _dkim_check(raw: bytes) -> list[dict]:
+    import dkim  # dkimpy
+    out = []
+    d = dkim.DKIM(raw, timeout=8)
+    sigs = [h for h in d.headers if h[0].lower() == b"dkim-signature"]
+    for i, (_, value) in enumerate(sigs[:5]):
+        tags = dict(t.strip().split("=", 1) for t in value.decode("ascii", "replace").replace("\r\n", "").split(";") if "=" in t)
+        entry = {"domain": tags.get("d", "").strip().lower(), "selector": tags.get("s", "").strip(), "algorithm": tags.get("a", "").strip(), "result": "fail"}
+        try:
+            entry["result"] = "pass" if d.verify(idx=i) else "fail"
+        except Exception as exc:  # noqa: BLE001 - dkimpy raises for broken signatures/keys
+            entry["result"], entry["error"] = "fail", str(exc)[:200]
+        out.append(entry)
+    return out
+
+
+def _spamassassin(raw_text: str) -> dict:
+    req = urllib.request.Request(SPAMCHECK_URL, data=json.dumps({"email": raw_text[:500_000], "options": "long"}).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": USER_AGENT}, method="POST")
+    with urllib.request.urlopen(req, timeout=25) as res:  # noqa: S310 - fixed https URL
+        return json.loads(res.read())
+
+
+LINK_SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at", "rb.gy", "tiny.cc"}
+
+
+def _content_facts(msg: Any) -> dict:
+    texts, htmls, attachments = [], [], []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        ctype = part.get_content_type()
+        disposition = (part.get_content_disposition() or "").lower()
+        if disposition == "attachment" or (part.get_filename() and not ctype.startswith("text/")):
+            attachments.append({"name": (part.get_filename() or "")[:120], "type": ctype})
+            continue
+        try:
+            content = part.get_content()
+        except Exception:  # noqa: BLE001 - undecodable part
+            content = ""
+        if ctype == "text/plain":
+            texts.append(str(content))
+        elif ctype == "text/html":
+            htmls.append(str(content))
+    html = "\n".join(htmls)
+    links = re.findall(r"""href\s*=\s*["']?(https?://[^"'\s>]+)""", html, re.I) or re.findall(r"https?://[^\s<>\"')]+", "\n".join(texts))
+    link_domains = sorted({(urllib.parse.urlsplit(u).hostname or "").lower() for u in links} - {""})
+    visible = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", re.sub(r"(?is)<(script|style).*?</\1>", " ", html))).strip()
+    return {
+        "has_text": bool(texts), "has_html": bool(htmls), "images": len(re.findall(r"<img\b", html, re.I)),
+        "links": len(links), "link_domains": link_domains[:20],
+        "shorteners": sorted(d for d in link_domains if d in LINK_SHORTENERS),
+        "text_chars": len(visible) if htmls else len(" ".join(texts).strip()),
+        "attachments": attachments[:10],
+    }
+
+
+async def analyze_test_email(raw: bytes, envelope_from: str) -> dict:
+    from email import policy
+    from email.parser import BytesParser
+    msg = BytesParser(policy=policy.default).parsebytes(raw)
+    from_header = str(msg.get("From") or "")
+    from_domain = _addr_domain(from_header)
+    mail_from = envelope_from or str(msg.get("Return-Path") or "").strip("<> ")
+    env_domain = _addr_domain(mail_from) or from_domain
+    ip, helo = _sending_ip(msg)
+    res: dict[str, Any] = {
+        "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "size": len(raw),
+        "headers": {"from": from_header[:300], "to": str(msg.get("To") or "")[:300], "subject": str(msg.get("Subject") or "")[:300],
+                    "date": str(msg.get("Date") or ""), "message_id": str(msg.get("Message-ID") or "")[:300],
+                    "reply_to": str(msg.get("Reply-To") or "")[:300], "list_unsubscribe": bool(msg.get("List-Unsubscribe")),
+                    "one_click_unsubscribe": bool(msg.get("List-Unsubscribe-Post")), "mailer": str(msg.get("X-Mailer") or msg.get("User-Agent") or "")[:200]},
+        "envelope_from": mail_from, "from_domain": from_domain, "sending_ip": ip, "helo": helo,
+    }
+
+    async def spf_part() -> dict:
+        if not ip:
+            return {"result": "none", "explanation": "The sending server's IP couldn't be found in the headers."}
+        try:
+            result, why = await asyncio.wait_for(run_in_threadpool(_spf_check, ip, mail_from, helo or ""), 15)
+            return {"result": result, "explanation": why, "domain": env_domain}
+        except Exception as exc:  # noqa: BLE001
+            return {"result": "temperror", "explanation": f"SPF check failed: {type(exc).__name__}", "domain": env_domain}
+
+    async def dkim_part() -> list[dict]:
+        try:
+            return await asyncio.wait_for(run_in_threadpool(_dkim_check, raw), 15)
+        except Exception as exc:  # noqa: BLE001
+            return [{"domain": "", "selector": "", "result": "temperror", "error": type(exc).__name__}]
+
+    async def dmarc_part() -> dict:
+        if not from_domain:
+            return {"found": False, "status": "fail", "errors": ["The email has no valid From address."]}
+        d = await analyze_dmarc(from_domain)
+        org = _org_domain(from_domain)
+        if not d.get("found") and org and org != from_domain:
+            d = await analyze_dmarc(org)
+        return d
+
+    async def spam_part() -> dict:
+        try:
+            r = await asyncio.wait_for(run_in_threadpool(_spamassassin, raw.decode("utf-8", "replace")), 30)
+            if not r.get("success"):
+                return {"available": False, "error": r.get("message") or "SpamAssassin check failed"}
+            rules = [{"score": float(x.get("score") or 0), "description": str(x.get("description") or "")[:200]} for x in r.get("rules") or []]
+            return {"available": True, "score": float(r.get("score") or 0), "rules": sorted(rules, key=lambda x: -x["score"])}
+        except Exception as exc:  # noqa: BLE001 - the free API may be slow or gone
+            return {"available": False, "error": f"Postmark's SpamAssassin check didn't answer ({type(exc).__name__})."}
+
+    content = _content_facts(msg)
+    link_check_domains = [d for d in content["link_domains"] if _org_domain(d) != _org_domain(from_domain)][:3]
+    spf_res, dkim_res, dmarc_res, spam_res, rdns, bl, *link_bls = await asyncio.gather(
+        spf_part(), dkim_part(), dmarc_part(), spam_part(),
+        check_rdns(ip) if ip else asyncio.sleep(0, {"ptr": [], "forward_confirmed": False}),
+        analyze_blocklists(from_domain, [(ip, ["Sending server"])] if ip and ":" not in ip else []),
+        *(analyze_blocklists(d, []) for d in link_check_domains))
+
+    # DMARC: does a passing SPF or DKIM line up with the From domain?
+    org = _org_domain(from_domain)
+    strict_dkim, strict_spf = dmarc_res.get("adkim") == "s", dmarc_res.get("aspf") == "s"
+    dkim_aligned = any(k["result"] == "pass" and (k["domain"] == from_domain if strict_dkim else _org_domain(k["domain"]) == org) for k in dkim_res)
+    spf_aligned = spf_res["result"] == "pass" and ((env_domain == from_domain) if strict_spf else _org_domain(env_domain) == org)
+    dmarc_result = "pass" if (dkim_aligned or spf_aligned) else "fail"
+    res.update(spf=spf_res, dkim=dkim_res, spamassassin=spam_res, content=content,
+               dmarc={"result": dmarc_result if dmarc_res.get("found") else "none", "policy": dmarc_res.get("policy"),
+                      "record": dmarc_res.get("record"), "dkim_aligned": dkim_aligned, "spf_aligned": spf_aligned},
+               reverse_dns={"ptr": rdns.get("ptr") or [], "forward_confirmed": rdns.get("forward_confirmed", False)},
+               blocklists=bl, link_blocklists=[{"domain": d, "listed": [l["list"] for l in r.get("domain_lists", []) if l["state"] == "listed"]}
+                                               for d, r in zip(link_check_domains, link_bls)])
+
+    # Score out of 10 with every deduction stated (our own rubric, not mail-tester's).
+    deductions: list[dict] = []
+    def take(points: float, area: str, text: str) -> None:
+        deductions.append({"points": round(points, 1), "area": area, "text": text})
+    r = spf_res["result"]
+    if r == "fail":
+        take(1.5, "SPF", f"SPF failed: {ip} isn't allowed to send for {env_domain}.")
+    elif r == "softfail":
+        take(1.0, "SPF", f"SPF soft-failed: {ip} isn't on {env_domain}'s list of senders.")
+    elif r in ("none", "neutral"):
+        take(1.0 if r == "none" else 0.5, "SPF", f"SPF gave no verdict ({r}) for {env_domain}.")
+    elif r in ("permerror", "temperror"):
+        take(1.0, "SPF", f"SPF couldn't be evaluated ({r}).")
+    if not dkim_res:
+        take(1.0, "DKIM", "The email isn't DKIM-signed.")
+    elif not any(k["result"] == "pass" for k in dkim_res):
+        take(1.5, "DKIM", "No DKIM signature verified: the message changed after signing, or the published key doesn't match.")
+    if not dmarc_res.get("found"):
+        take(0.5, "DMARC", f"{org or 'The sender'} has no DMARC record.")
+    elif dmarc_result == "fail":
+        take(1.5, "DMARC", "DMARC failed: neither SPF nor DKIM passed for the From domain.")
+    listed = [l["list"] for e in bl.get("ips", []) for l in e["lists"] if l["state"] == "listed"]
+    if listed:
+        take(min(3.0, len(listed)), "Blocklists", f"The sending server {ip} is listed on {', '.join(listed)}.")
+    if ip and not rdns.get("ptr"):
+        take(1.0, "Reverse DNS", f"{ip} has no reverse DNS name.")
+    elif ip and not rdns.get("forward_confirmed"):
+        take(0.5, "Reverse DNS", f"{ip}'s reverse DNS name doesn't point back to it.")
+    if spam_res.get("available") and spam_res["score"] > 0:
+        take(min(4.0, spam_res["score"] * 0.8), "SpamAssassin", f"SpamAssassin scored the message {spam_res['score']:g} (5 or more is usually treated as spam).")
+    if content["has_html"] and not content["has_text"]:
+        take(0.5, "Content", "HTML only, with no plain-text version.")
+    if content["shorteners"]:
+        take(0.5, "Content", f"Uses link shorteners ({', '.join(content['shorteners'])}), which spam filters distrust.")
+    bad_links = [x["domain"] for x in res["link_blocklists"] if x["listed"]]
+    if bad_links:
+        take(1.0, "Content", f"Links to a blocklisted domain: {', '.join(bad_links)}.")
+    if not res["headers"]["message_id"]:
+        take(0.5, "Headers", "No Message-ID header.")
+    if not res["headers"]["date"]:
+        take(0.5, "Headers", "No Date header.")
+    res["deductions"] = deductions
+    res["score"] = max(0.0, round(10 - sum(d["points"] for d in deductions), 1))
+    res["verdict"] = ("Looks good: well set up for delivery." if res["score"] >= 9 else
+                      "Mostly fine, with a few things worth fixing." if res["score"] >= 7 else
+                      "Likely to land in spam for some receivers." if res["score"] >= 5 else
+                      "Likely to be rejected or sent to spam.")
+    return res
+
+
+@app.post("/api/v1/mailtest/new")
+async def mailtest_new(request: Request, response: Response) -> dict:
+    """Make a one-hour test address."""
+    response.headers["Cache-Control"] = "no-store"
+    if not mailtest_enabled():
+        raise HTTPException(status_code=503, detail="The email test isn't set up on this server yet.")
+    ip = client_info(request)["ip"] or "unknown"
+    if not await daily_counter(f"vdig:mt-ip:{ip}", MAILTEST_PER_IP_DAY):
+        raise HTTPException(status_code=429, detail=f"You've made {MAILTEST_PER_IP_DAY} test addresses today. Try again tomorrow.")
+    test_id = "".join(secrets.choice("abcdefghijkmnpqrstuvwxyz23456789") for _ in range(12))
+    await redis(["SET", f"vdig:mt:{test_id}", json.dumps({"state": "waiting", "created": time.time()}), "EX", str(MAILTEST_TTL)])
+    logged = track(request, "mailtest", mailtest_address(test_id))
+    await tracked(logged)
+    return {"id": test_id, "address": mailtest_address(test_id), "expires_in": MAILTEST_TTL}
+
+
+@app.post("/api/v1/mailtest/inbound", include_in_schema=False)
+async def mailtest_inbound(request: Request, id: str = Query(..., min_length=8, max_length=24)) -> dict:
+    """Called by the Cloudflare Worker with the raw email."""
+    if not mailtest_enabled() or not secrets.compare_digest(request.headers.get("x-vdig-secret", "").encode(), MAILTEST_SECRET.encode()):
+        raise HTTPException(status_code=401, detail="Not allowed.")
+    test_id = id.lower()
+    if not re.fullmatch(r"[a-z0-9]{8,24}", test_id):
+        raise HTTPException(status_code=404, detail="Unknown test.")
+    current = (await redis(["GET", f"vdig:mt:{test_id}"]))[0]
+    if not current:
+        raise HTTPException(status_code=404, detail="This test address has expired.")
+    if json.loads(current).get("state") != "waiting":
+        return {"ok": True, "note": "already received"}   # only the first email counts
+    raw = await request.body()
+    head, sep, body = raw.partition(b"\r\n\r\n") if b"\r\n\r\n" in raw else raw.partition(b"\n\n")
+    stored = raw if len(raw) <= MAILTEST_MAX_BYTES else head + sep + body[: max(0, MAILTEST_MAX_BYTES - len(head) - len(sep))]
+    record = {"state": "received", "raw": stored.decode("latin-1"), "truncated": len(stored) < len(raw), "size": len(raw),
+              "envelope_from": request.headers.get("x-envelope-from", "")[:300]}
+    ttl = (await redis(["TTL", f"vdig:mt:{test_id}"]))[0]
+    await redis(["SET", f"vdig:mt:{test_id}", json.dumps(record), "EX", str(max(60, int(ttl or MAILTEST_TTL)))])
+    return {"ok": True}
+
+
+@app.get("/api/v1/mailtest/{test_id}")
+async def mailtest_result(test_id: str, response: Response) -> dict:
+    """Poll a test: waiting, or the finished report (worked out once, then kept until the test expires)."""
+    response.headers["Cache-Control"] = "no-store"
+    if not mailtest_enabled():
+        raise HTTPException(status_code=503, detail="The email test isn't set up on this server yet.")
+    test_id = test_id.lower()
+    if not re.fullmatch(r"[a-z0-9]{8,24}", test_id):
+        raise HTTPException(status_code=404, detail="Unknown test.")
+    key = f"vdig:mt:{test_id}"
+    current, ttl = await redis(["GET", key], ["TTL", key])
+    if not current:
+        raise HTTPException(status_code=404, detail="This test has expired or doesn't exist. Start a new one.")
+    rec = json.loads(current)
+    base = {"id": test_id, "address": mailtest_address(test_id), "expires_in": max(0, int(ttl or 0))}
+    if rec["state"] == "waiting":
+        return {**base, "state": "waiting"}
+    if rec["state"] == "done":
+        return {**base, "state": "done", "report": rec["report"]}
+    # First poll after the email arrived: analyse it (a lock stops two polls doing it at once).
+    got_lock = (await redis(["SET", f"{key}:lock", "1", "NX", "EX", "90"]))[0]
+    if not got_lock:
+        return {**base, "state": "analyzing"}
+    raw = rec["raw"].encode("latin-1")
+    report = await asyncio.wait_for(analyze_test_email(raw, rec.get("envelope_from", "")), 50)
+    report["truncated"] = rec.get("truncated", False)
+    report["raw_headers"] = raw.split(b"\r\n\r\n" if b"\r\n\r\n" in raw else b"\n\n", 1)[0].decode("utf-8", "replace")[:60000]
+    await redis(["SET", key, json.dumps({"state": "done", "report": report}, default=str), "EX", str(max(60, int(ttl or 600)))])
+    return {**base, "state": "done", "report": report}
+
+
+# ---- Website screenshot (Browserless) ----------------------------------------------------------
+def _browserless_shot(url: str, with_viewport: bool) -> tuple[int, bytes, str]:
+    body: dict[str, Any] = {"url": url, "bestAttempt": True, "gotoOptions": {"waitUntil": "networkidle2", "timeout": 15000},
+                            "options": {"type": "jpeg", "quality": 70, "fullPage": False}}
+    if with_viewport:
+        body["viewport"] = {"width": 1280, "height": 800}
+    req = urllib.request.Request(f"{BROWSERLESS_URL}/screenshot?token={urllib.parse.quote(BROWSERLESS_TOKEN)}",
+                                 data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as res:  # noqa: S310 - fixed https URL from config
+            return res.status, res.read(5_000_000), res.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(2000), exc.headers.get("Content-Type", "") if exc.headers else ""
+
+
+@app.get("/api/v1/screenshot")
+async def screenshot(domain: str = Query(..., min_length=1, max_length=300)) -> Response:
+    """A JPEG of the website's home page, as a 1280x800 browser sees it. Cached at the edge for 6 hours."""
+    if not BROWSERLESS_TOKEN:
+        raise HTTPException(status_code=503, detail="Screenshots aren't set up on this server.")
+    clean = _clean_domain(domain)
+    ips = await _ips_of(clean)
+    if not ips or not all(is_public_ip(i) for i in ips):
+        raise HTTPException(status_code=404, detail="This domain has no public website address.")
+    if not await daily_counter("vdig:shots", SCREENSHOT_PER_DAY):
+        raise HTTPException(status_code=429, detail="Today's screenshot allowance is used up. Try again tomorrow.")
+    url = f"https://{clean}/"
+    status, data, ctype = await asyncio.wait_for(run_in_threadpool(_browserless_shot, url, True), 40)
+    if status == 400 and b"viewport" in data.lower():   # if this Browserless version doesn't take viewport, retry without it
+        status, data, ctype = await asyncio.wait_for(run_in_threadpool(_browserless_shot, url, False), 40)
+    if status != 200 or not ctype.startswith("image/"):
+        log.warning("Screenshot failed for %s: HTTP %s %s", clean, status, data[:200])
+        raise HTTPException(status_code=502, detail="The screenshot service couldn't load this site.")
+    return Response(content=data, media_type=ctype, headers={"Cache-Control": "public, max-age=3600, s-maxage=21600"})
+
+
+
 @app.get("/api/v1/health")
 async def health() -> dict:
     """Used by you (and uptime monitors) to confirm the API is alive."""
     # usage_log / admin_ready only say whether the log is set up (never any secret), so the admin page
     # can tell the owner exactly which setup step is missing.
     return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "usage_log": usage_enabled(),
-            "admin_ready": len(ADMIN_TOKEN) >= 16, "time": datetime.now(timezone.utc).isoformat()}
+            "admin_ready": len(ADMIN_TOKEN) >= 16, "mailtest": mailtest_enabled(), "screenshots": bool(BROWSERLESS_TOKEN),
+            "time": datetime.now(timezone.utc).isoformat()}
 
 
 def _set_cdn_cache(response: Response, seconds: int) -> None:

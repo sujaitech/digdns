@@ -3,3 +3,5 @@ fastapi>=0.110,<1.0
 uvicorn[standard]>=0.29,<1.0
 dnspython>=2.6,<3.0
 cryptography>=42.0      # 42+ needed for not_valid_after_utc
+pyspf>=2.0.14,<3.0     # SPF evaluation for the email test
+dkimpy>=1.1,<2.0       # DKIM signature verification for the email test
