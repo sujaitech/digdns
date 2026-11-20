@@ -19,7 +19,7 @@ The report opens with a **What needs attention** list of every problem, worst fi
 
 Plus four tools:
 
-- **Propagation:** compares 8 public resolvers with the authoritative nameserver.
+- **Propagation:** compares resolvers with your authoritative nameserver, worldwide (one ISP resolver in each of up to 60 countries), in one chosen country, or just the 8 big public resolvers. Shows the percentage already updated, a summary per region, and flags domains whose answers legitimately vary by location (GeoDNS/CDNs).
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
 - **Headers & bounces:** paste a bounce (non-delivery report) to get the cause in plain English, who has to fix it and how, per recipient. It reads Exim, Postfix, Sendmail, qmail, Gmail, Microsoft 365 and standard RFC 3464 reports, explains the SMTP and enhanced status codes and the stage at which the mail was refused, and spots when several unrelated providers were all refused by one server (your own outgoing filter). Or paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
@@ -38,7 +38,8 @@ Browser ──► Vercel edge (CDN) ──┬─► public/index.html           
                                        ├─► Public DNS (1.1.1.1, 8.8.8.8)
                                        ├─► Team Cymru               who owns an IP
                                        ├─► RDAP / WHOIS registries  domain registration
-                                       ├─► nameservers + 8 resolvers health and propagation
+                                       ├─► nameservers + resolvers  health and propagation (8 anycast + ISP resolvers worldwide)
+                                       ├─► public-dns.info          list of open resolvers by country (daily)
                                        └─► the checked site :80/443 website status, headers, SSL, MTA-STS policy
 ```
 
@@ -74,7 +75,8 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `/api/v1/analyze?domain=example.com` | The full report, in one JSON document |
 | `/api/v1/analyze/stream?domain=example.com` | The same report streamed as newline-delimited JSON: one `section` line per check as it finishes, then the final `report` line. The page uses this. |
 | `/api/v1/whois?domain=example.com` | Registration only (RDAP, falling back to WHOIS) |
-| `/api/v1/propagation?domain=www.example.com&type=A` | Compare 8 public resolvers and the authoritative nameserver |
+| `/api/v1/propagation?domain=www.example.com&type=A&scope=world` | Compare resolvers with the authoritative nameserver. `scope`: `world` (default), `country` (add `&country=IN`) or `global` (8 big resolvers only) |
+| `/api/v1/propagation/locations` | Countries that currently have reliable resolvers, for the country picker |
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
 | `/api/v1/blocklist?ip=203.0.113.5` | Check one IPv4 address against the IP blocklists |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
@@ -139,4 +141,5 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 - **Spamhaus and Barracuda aren't queried.** Spamhaus refuses lookups from cloud platforms such as AWS, where Vercel runs, and Barracuda needs registration. The report links to Spamhaus's own checker instead. Spamhaus's free Data Query Service (a key) could be added later.
 - **Blocklists cover IPv4 only;** almost no lists publish IPv6 data.
 - **No deliverability (inbox placement) test.** That needs real seed mailboxes at Gmail, Outlook and others.
-- **Propagation and nameserver checks run from Vercel's region.** Anycast resolvers answer from their nearest site, so this isn't a worldwide view. Nameservers are checked over IPv4 only.
+- **Regional resolvers are volunteers' and ISPs' open resolvers** listed by public-dns.info. Only ones with 99%+ reliability, checked in the last 3 days, are used, and the list is refreshed twice a day (shared through the Redis database when connected), but any of them can go offline or misbehave. One odd result isn't proof of a problem.
+- **The big anycast resolvers answer from their site nearest to Vercel's region**, so they're shown separately from the country view. Everything is checked over IPv4 only.

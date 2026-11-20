@@ -50,6 +50,8 @@ import urllib.parse
 import urllib.request
 import zlib
 from collections import Counter
+import csv
+import io
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
@@ -1408,15 +1410,16 @@ PUBLIC_RESOLVERS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-async def _ask_for_row(name: str, ip: str, place: str, qname: str, rtype: str, recursive: bool) -> dict:
+async def _ask_for_row(name: str, ip: str, place: str, qname: str, rtype: str, recursive: bool,
+                       timeout: float = 4.0, **extra: Any) -> dict:
     row: dict[str, Any] = {"name": name, "ip": ip, "location": place, "values": [], "ttl": None,
-                           "rcode": None, "rtt_ms": None, "error": None}
+                           "rcode": None, "rtt_ms": None, "error": None, **extra}
     try:
-        resp, rtt = await ask_server(ip, qname, rtype, recursive=recursive, timeout=4)
+        resp, rtt = await ask_server(ip, qname, rtype, recursive=recursive, timeout=timeout)
         row["rtt_ms"], row["rcode"] = rtt, dns.rcode.to_text(resp.rcode())
         row["values"], row["ttl"] = answer_values(resp, rtype)
     except dns.exception.Timeout:
-        row["error"] = "No answer within 4 seconds"
+        row["error"] = f"No answer within {timeout:g} seconds"
     except OSError as exc:
         row["error"] = f"Network error: {exc.strerror or exc}"
     return row
@@ -1431,44 +1434,219 @@ def _answer_key(row: dict) -> tuple:
     return tuple(row["values"]) or ("NO RECORDS",)
 
 
-async def check_propagation(domain: str, rtype: str) -> dict:
+# ---- Worldwide resolvers (from public-dns.info) ------------------------------------------------------
+# The big public resolvers above are anycast: they answer from whichever of their sites is nearest to
+# OUR server, so they can't show what people in another country see. For that we ask unicast resolvers
+# run by ISPs and organisations in each country. public-dns.info tests ~7,000 open resolvers
+# continuously; we keep only very reliable, recently checked ones and pick a few per country,
+# preferring different networks. The shortlist is rebuilt once a day.
+RESOLVER_LIST_URL = "https://public-dns.info/nameservers.csv"
+RESOLVER_LIST_MAX_BYTES = 4_000_000
+POOL_TTL = 12 * 3600            # rebuild the shortlist at most twice a day
+POOL_PER_COUNTRY = 8            # kept per country
+POOL_MIN_RELIABILITY = 0.99
+WORLD_MAX = 60                  # resolvers asked in a worldwide check
+COUNTRY_MAX = 8                 # resolvers asked in a single-country check
+REGIONAL_TIMEOUT = 3.0          # seconds; open resolvers that are slower than this are skipped
+# Anycast networks (and names) excluded from the country pool: their location says nothing.
+ANYCAST_ASNS = {15169, 13335, 19281, 36692, 42}
+ANYCAST_NAME = re.compile(r"(dns\.google|cloudflare|quad9|opendns|umbrella|adguard|nextdns|controld|cleanbrowsing|alidns|dnspod|114dns)", re.I)
+
+REGIONS: dict[str, str] = {}
+for _region, _codes in {
+    "North America": "US CA MX GT BZ SV HN NI CR PA CU DO HT JM BS BB TT PR AG DM GD KN LC VC BM KY TC VG VI AW CW",
+    "South America": "BR AR CL CO PE VE EC BO PY UY GY SR GF",
+    "Europe": "GB IE FR DE NL BE LU CH AT IT ES PT DK NO SE FI IS EE LV LT PL CZ SK HU SI HR BA RS ME MK AL GR BG RO MD UA BY RU MT CY LI MC SM AD GI FO IM JE GG XK",
+    "Middle East": "TR IL PS JO LB SY IQ IR SA AE QA BH KW OM YE GE AM AZ",
+    "Africa": "EG LY TN DZ MA SD SS ET ER DJ SO KE UG TZ RW BI CD CG CF CM GA GQ TD NE NG BJ TG GH CI LR SL GN GW SN GM ML BF MR CV AO ZM ZW MW MZ BW NA ZA LS SZ MG MU SC RE KM ST",
+    "Asia": "IN PK BD LK NP BT MV AF KZ UZ TM KG TJ MN CN HK MO TW JP KR KP SG MY ID TH VN PH KH LA MM BN TL",
+    "Oceania": "AU NZ PG FJ SB VU NC PF WS TO KI FM MH PW NR TV GU",
+}.items():
+    for _c in _codes.split():
+        REGIONS[_c] = _region
+REGION_ORDER = ["North America", "South America", "Europe", "Middle East", "Africa", "Asia", "Oceania", "Other"]
+# Countries asked first in a worldwide check, so every region is covered even when the cap is reached.
+WORLD_PRIORITY = ("US CA MX BR AR CL CO GB IE FR DE NL ES IT PL SE RU UA TR IL AE SA EG NG KE ZA IN PK BD "
+                  "CN HK TW JP KR SG MY ID TH VN PH AU NZ").split()
+
+_pool_mem: dict[str, Any] = {"at": 0.0, "data": None}
+_pool_lock = asyncio.Lock()
+
+
+def build_resolver_pool(csv_text: str, now: datetime | None = None) -> dict:
+    """Turn public-dns.info's CSV into {country: [resolver, ...]} with only trustworthy entries."""
+    now = now or datetime.now(timezone.utc)
+    by_country: dict[str, list[dict]] = {}
+    listed = 0
+    for row in csv.DictReader(io.StringIO(csv_text)):
+        listed += 1
+        ip = (row.get("ip_address") or "").strip()
+        cc = (row.get("country_code") or "").strip().upper()
+        try:
+            rel = float(row.get("reliability") or 0)
+            asn = int(row.get("as_number") or 0)
+            checked = datetime.fromisoformat((row.get("checked_at") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        name = (row.get("name") or "").strip().rstrip(".")
+        org = (row.get("as_org") or "").strip()
+        if (":" in ip or not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) or not is_public_ip(ip)  # IPv4 only: our servers have no IPv6
+                or not re.fullmatch(r"[A-Z]{2}", cc) or rel < POOL_MIN_RELIABILITY or (row.get("error") or "").strip()
+                or (now - checked).days > 3 or asn in ANYCAST_ASNS or ANYCAST_NAME.search(f"{name} {org}")):
+            continue
+        by_country.setdefault(cc, []).append({"ip": ip, "name": name, "org": org[:80], "asn": asn,
+                                              "city": (row.get("city") or "").strip()[:60], "rel": rel})
+    countries: dict[str, list[dict]] = {}
+    for cc, items in by_country.items():
+        items.sort(key=lambda r: (-r["rel"], not r["name"], r["ip"]))
+        picked: list[dict] = []
+        seen_asn: set[int] = set()
+        for r in items:                       # first pass: one per network, for variety
+            if r["asn"] not in seen_asn:
+                picked.append(r)
+                seen_asn.add(r["asn"])
+            if len(picked) >= POOL_PER_COUNTRY:
+                break
+        for r in items:                       # then fill with second servers from the same networks
+            if len(picked) >= POOL_PER_COUNTRY:
+                break
+            if r not in picked:
+                picked.append(r)
+        countries[cc] = picked
+    return {"fetched_at": now.isoformat(timespec="seconds"), "source": RESOLVER_LIST_URL,
+            "listed": listed, "countries": countries}
+
+
+def _download_resolver_list() -> str:
+    req = urllib.request.Request(RESOLVER_LIST_URL, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=15) as res:  # noqa: S310 - fixed https URL
+        return res.read(RESOLVER_LIST_MAX_BYTES).decode("utf-8", errors="replace")
+
+
+async def resolver_pool() -> dict | None:
+    """The shortlist: from memory, else the shared Redis copy, else downloaded fresh. None if unavailable."""
+    if _pool_mem["data"] and time.monotonic() - _pool_mem["at"] < POOL_TTL:
+        return _pool_mem["data"]
+    async with _pool_lock:
+        if _pool_mem["data"] and time.monotonic() - _pool_mem["at"] < POOL_TTL:
+            return _pool_mem["data"]
+        if usage_enabled():                   # shared between all server instances
+            try:
+                reply = await asyncio.wait_for(run_in_threadpool(_redis_pipeline, [["GET", "vdig:resolver-pool"]]), 4)
+                cached = json.loads(reply[0].get("result") or "null")
+                if cached:
+                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
+                    if age < POOL_TTL:
+                        _pool_mem.update(at=time.monotonic() - age, data=cached)
+                        return cached
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Resolver pool cache read failed: %s", type(exc).__name__)
+        try:
+            text = await asyncio.wait_for(run_in_threadpool(_download_resolver_list), 20)
+            pool = build_resolver_pool(text)
+            if len(pool["countries"]) < 20:
+                raise ValueError(f"only {len(pool['countries'])} countries")
+        except Exception as exc:  # noqa: BLE001 - fall back to whatever we had
+            log.warning("Resolver list download failed: %s", exc)
+            return _pool_mem["data"]
+        _pool_mem.update(at=time.monotonic(), data=pool)
+        if usage_enabled():
+            try:
+                await asyncio.wait_for(run_in_threadpool(_redis_pipeline, [
+                    ["SET", "vdig:resolver-pool", json.dumps(pool, separators=(",", ":")), "EX", str(2 * POOL_TTL)]]), 4)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Resolver pool cache write failed: %s", type(exc).__name__)
+        return pool
+
+
+def pick_resolvers(pool: dict, scope: str, country: str | None) -> list[dict]:
+    """Worldwide: the best resolver in each country (priority countries first). Country: up to COUNTRY_MAX there."""
+    countries = pool.get("countries", {})
+    if scope == "country":
+        return [{**r, "country": country} for r in countries.get(country or "", [])[:COUNTRY_MAX]]
+    order = [c for c in WORLD_PRIORITY if c in countries]
+    order += sorted((c for c in countries if c not in order), key=lambda c: -len(countries[c]))
+    return [{**countries[c][0], "country": c} for c in order[:WORLD_MAX]]
+
+
+def _rows_compare(rows: list[dict], reference: tuple | None) -> None:
+    for r in rows:
+        r["matches"] = None if r["error"] else _answer_key(r) == reference
+
+
+async def check_propagation(domain: str, rtype: str, scope: str = "world", country: str | None = None) -> dict:
     zone, ns_hosts = await find_zone(domain)
-    tasks = [_ask_for_row(n, ip, place, domain, rtype, True) for n, ip, place in PUBLIC_RESOLVERS]
+    anycast = [_ask_for_row(n, ip, place, domain, rtype, True, group="anycast", region="Global", country=None, city="", org=n)
+               for n, ip, place in PUBLIC_RESOLVERS]
+    pool = await resolver_pool() if scope in ("world", "country") else None
+    regional_specs = pick_resolvers(pool, scope, country) if pool else []
+    regional = [_ask_for_row(r["org"] or r["name"] or r["ip"], r["ip"], ", ".join(x for x in (r["city"], r["country"]) if x),
+                             domain, rtype, True, timeout=REGIONAL_TIMEOUT, group="regional", region=REGIONS.get(r["country"], "Other"),
+                             country=r["country"], city=r["city"], org=r["org"], hostname=r["name"])
+                for r in regional_specs]
     auth_task = None
     if ns_hosts:
         ns_ips = [ip for ip in await _ips_of(ns_hosts[0]) if ":" not in ip and is_public_ip(ip)]
         if ns_ips:
-            auth_task = _ask_for_row(ns_hosts[0], ns_ips[0], "Authoritative", domain, rtype, False)
-    rows = list(await asyncio.gather(*tasks, *( [auth_task] if auth_task else [] )))
-    authoritative = rows.pop() if auth_task else None
+            auth_task = _ask_for_row(ns_hosts[0], ns_ips[0], "Authoritative", domain, rtype, False, group="authoritative")
+    done = list(await asyncio.gather(*anycast, *regional, *([auth_task] if auth_task else [])))
+    authoritative = done.pop() if auth_task else None
+    rows = done
 
     answered = [r for r in rows if not r["error"]]
     counts = Counter(_answer_key(r) for r in answered)
     consensus = counts.most_common(1)[0][0] if counts else None
-    for r in rows:
-        r["matches"] = None if r["error"] else _answer_key(r) == consensus
-
-    differing = [r["name"] for r in rows if r["matches"] is False]
-    failed = [r["name"] for r in rows if r["error"]]
-    auth_key = _answer_key(authoritative) if authoritative else None
+    # Compare with the authoritative answer when we have one: that's the "new" record everyone should reach.
+    auth_ok = bool(authoritative and not authoritative["error"] and authoritative["rcode"] == "NOERROR" and authoritative["values"])
+    reference = _answer_key(authoritative) if auth_ok else consensus
+    _rows_compare(rows, reference)
     if authoritative:
-        authoritative["matches"] = None if authoritative["error"] else auth_key == consensus
+        authoritative["matches"] = None if authoritative["error"] else True
 
+    matching = [r for r in answered if r["matches"]]
+    differing = [r for r in answered if r["matches"] is False]
+    pct = round(100 * len(matching) / len(answered)) if answered else 0
+    by_region: dict[str, dict[str, int]] = {}
+    for r in rows:
+        g = by_region.setdefault(r.get("region") or "Other", {"total": 0, "answered": 0, "matching": 0})
+        g["total"] += 1
+        g["answered"] += 0 if r["error"] else 1
+        g["matching"] += 1 if r["matches"] else 0
+
+    notes = []
+    geo_dns = len(counts) >= 3 and len(differing) >= 3
+    if geo_dns:
+        notes.append("Answers vary by location: this domain probably uses GeoDNS or a CDN that hands out different "
+                     "servers in different places. Differences here don't necessarily mean a change hasn't spread.")
+    if scope in ("world", "country") and not pool:
+        notes.append("The worldwide resolver list couldn't be loaded just now, so only the big public resolvers were asked.")
+    elif scope == "country" and not regional_specs:
+        notes.append("No reliable public resolvers are listed for that country right now, so only the big public resolvers were asked.")
+    timeouts = sum(1 for r in rows if r["error"] and r["group"] == "regional")
+    if timeouts:
+        notes.append(f"{timeouts} regional resolver{'s' if timeouts != 1 else ''} didn't answer in {REGIONAL_TIMEOUT:g} seconds. "
+                     "Open resolvers come and go, so this isn't about your domain.")
+    notes.append("Big public resolvers (Google, Cloudflare and others) answer from their site nearest to our server. "
+                 "Regional resolvers are run by ISPs and organisations in each country (list from public-dns.info), "
+                 "so they show what people there see.")
+
+    target = "your nameserver" if auth_ok else "the most common answer"
     if not answered:
         status, summary = "error", "None of the resolvers answered. Try again in a minute."
-    elif differing:
-        status = "warn"
-        summary = (f"{len(differing)} of {len(answered)} resolvers show a different answer. "
-                   "They're still serving a cached older record; this clears as their copies expire (see TTL).")
-    elif authoritative and not authoritative["error"] and authoritative["matches"] is False and auth_key != ("NO RECORDS",):
-        status = "warn"
-        summary = "Every public resolver agrees, but the authoritative nameserver now says something different. The change hasn't reached these caches yet."
+    elif not differing:
+        status, summary = "pass", f"All {len(answered)} resolvers that answered return the same as {target}."
     else:
-        status, summary = "pass", f"All {len(answered)} resolvers that answered return the same result."
-    return {"domain": domain, "type": rtype, "zone": zone, "status": status, "summary": summary,
-            "consensus": list(consensus) if consensus else [], "authoritative": authoritative, "resolvers": rows,
-            "failed": failed,
-            "note": "Anycast resolvers answer from their site nearest to our server, so this shows how the change looks from that region."}
+        status = "warn"
+        summary = (f"{len(matching)} of {len(answered)} resolvers ({pct}%) already return the same as {target}. "
+                   + ("The rest give location-specific answers." if geo_dns else
+                      "The rest still serve an older cached copy, which clears when its TTL runs out."))
+    return {"domain": domain, "type": rtype, "zone": zone, "scope": scope, "country": country,
+            "status": status, "summary": summary, "percent": pct,
+            "counts": {"answered": len(answered), "matching": len(matching), "differing": len(differing), "asked": len(rows)},
+            "by_region": by_region, "consensus": list(consensus) if consensus else [], "compared_with": "authoritative" if auth_ok else "consensus",
+            "authoritative": authoritative, "resolvers": rows, "failed": [r["name"] for r in rows if r["error"]],
+            "pool": {"source": RESOLVER_LIST_URL, "fetched_at": pool["fetched_at"]} if pool else None,
+            "note": " ".join(notes), "notes": notes}
 
 
 # ---- 3d-10. MTA-STS, TLS-RPT and BIMI (optional email security records) -----------------------------
@@ -2752,21 +2930,42 @@ async def analyze_stream(request: Request, domain: str = Query(..., min_length=1
 @app.get("/api/v1/propagation")
 async def propagation(request: Request, response: Response,
                       domain: str = Query(..., min_length=1, max_length=300),
-                      type: str = Query("A", alias="type", max_length=8)) -> dict:
-    """Ask 8 public resolvers and the authoritative nameserver for one record type, and compare."""
+                      type: str = Query("A", alias="type", max_length=8),
+                      scope: str = Query("world", max_length=10, description="world, country or global"),
+                      country: str | None = Query(None, max_length=2, description="Two-letter country code, with scope=country")) -> dict:
+    """Ask resolvers around the world (or in one country) and the authoritative nameserver for one record, and compare."""
     clean = _clean_domain(domain)
     rtype = type.upper()
     if rtype not in PROPAGATION_TYPES:
         raise HTTPException(status_code=400, detail=f"Record type must be one of {', '.join(PROPAGATION_TYPES)}.")
-    logged = track(request, "propagation", f"{clean} {rtype}")
+    scope = scope.lower()
+    if scope not in ("world", "country", "global"):
+        raise HTTPException(status_code=400, detail="scope must be world, country or global.")
+    cc = (country or "").upper() or None
+    if scope == "country" and not (cc and re.fullmatch(r"[A-Z]{2}", cc)):
+        raise HTTPException(status_code=400, detail="Pick a country (a two-letter code such as IN or US).")
+    logged = track(request, "propagation", f"{clean} {rtype} {cc or scope}")
     try:
-        res = await asyncio.wait_for(check_propagation(clean, rtype), timeout=20)
+        res = await asyncio.wait_for(check_propagation(clean, rtype, scope, cc if scope == "country" else None), timeout=40)
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="The resolvers took too long to answer. Try again.") from exc
     finally:
         await tracked(logged)
     _set_cdn_cache(response, 30)  # short: people re-run this while waiting for a change to spread
     return res
+
+
+@app.get("/api/v1/propagation/locations")
+async def propagation_locations(response: Response) -> dict:
+    """Countries that have reliable resolvers right now, for the country picker."""
+    pool = await resolver_pool()
+    if not pool:
+        _set_cdn_cache(response, 60)
+        return {"available": False, "countries": []}
+    _set_cdn_cache(response, 3600)
+    return {"available": True, "fetched_at": pool["fetched_at"], "source": pool["source"],
+            "countries": sorted(({"code": c, "region": REGIONS.get(c, "Other"), "resolvers": len(v)}
+                                 for c, v in pool["countries"].items()), key=lambda x: x["code"])}
 
 
 @app.get("/api/v1/blocklist")
