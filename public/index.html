@@ -81,6 +81,13 @@
     .slice:disabled { cursor: wait; }
     @media (prefers-reduced-motion: reduce) { .slice, .slice::after { transition: none; } }
 
+    /* Propagation scope picker: a segmented control on the navy header */
+    .scope-opt { display: block; cursor: pointer; }
+    .scope-opt span { display: block; padding: .4rem .85rem; border-radius: .4rem; font-size: .875rem; font-weight: 600; color: rgb(255 255 255 / .75); white-space: nowrap; }
+    .scope-opt:hover span { color: #fff; }
+    .scope-opt input:checked + span { background: #fff; color: #262262; }
+    .scope-opt input:focus-visible + span { outline: 2px solid #27AAE1; outline-offset: 2px; }
+
     /* Custom checkbox/radio cards in the builders */
     .choice:has(input:checked) { border-color: #27AAE1; background: rgba(39,170,225,.08); }
     .choice:has(input:focus-visible) { outline: 2px solid #27AAE1; outline-offset: 2px; }
@@ -140,7 +147,7 @@
       <!-- Header block: propagation -->
       <div id="head-prop" hidden>
         <h1 class="display mt-10 max-w-2xl text-3xl font-bold leading-tight sm:text-4xl">Check DNS propagation</h1>
-        <p class="mt-3 max-w-2xl text-white/80">See whether eight public DNS resolvers have picked up a change yet, compared with what your own nameserver says.</p>
+        <p class="mt-3 max-w-2xl text-white/80">See whether DNS resolvers around the world, or in one country, have picked up a change yet, compared with what your own nameserver says.</p>
         <form id="prop-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
           <label for="prop-domain" class="sr-only">Domain or hostname</label>
           <input id="prop-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="www.example.com" required maxlength="253"
@@ -151,6 +158,19 @@
           </select>
           <button id="prop-btn" type="submit" class="slice">Check</button>
         </form>
+        <fieldset class="mt-4 flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-2" aria-describedby="prop-scope-hint">
+          <legend class="sr-only">Where to check from</legend>
+          <div class="inline-flex rounded-lg bg-white/10 p-1" role="radiogroup">
+            <label class="scope-opt"><input type="radio" name="prop-scope" value="world" checked class="sr-only" /><span>Worldwide</span></label>
+            <label class="scope-opt"><input type="radio" name="prop-scope" value="country" class="sr-only" /><span>One country</span></label>
+            <label class="scope-opt"><input type="radio" name="prop-scope" value="global" class="sr-only" /><span>Big public DNS only</span></label>
+          </div>
+          <label for="prop-country" class="sr-only">Country</label>
+          <select id="prop-country" hidden class="rounded-lg border-2 border-transparent bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
+            <option value="">Loading countries…</option>
+          </select>
+          <p id="prop-scope-hint" class="w-full text-[13px] text-white/60">One resolver in each of up to 60 countries, plus Google, Cloudflare and the other big public resolvers.</p>
+        </fieldset>
       </div>
 
       <!-- Header block: SPF builder -->
@@ -1517,69 +1537,223 @@ function renderMailSecurity(m) {
 /* =====================================================================
    PROPAGATION
    ===================================================================== */
+const countryLabel = (() => {
+  let names = null;
+  try { names = new Intl.DisplayNames(["en"], { type: "region" }); } catch { /* old browser */ }
+  return (code) => { try { return code ? names?.of(code) || code : ""; } catch { return code || ""; } };
+})();
+const PROP_REGIONS = ["North America", "South America", "Europe", "Middle East", "Africa", "Asia", "Oceania", "Other"];
+const PROP_HINT = {
+  world: "One resolver in each of up to 60 countries, plus Google, Cloudflare and the other big public resolvers.",
+  country: "Up to 8 resolvers run by different ISPs and organisations in the country you pick.",
+  global: "Only the 8 big public resolvers. Fastest, but they answer from their site nearest to our server, not from a country.",
+};
+const propScope = () => document.querySelector('input[name="prop-scope"]:checked')?.value || "world";
+
+/** What a row's status chip says: "Updated" when compared with the nameserver, "Matches" otherwise. */
+function propVerdict(r, p) {
+  if (r.error) return ["text-ink/50", "No answer", "none"];
+  if (r.matches) return ["text-pass", p.compared_with === "authoritative" ? "Updated" : "Matches", "pass"];
+  return ["text-warn", p.compared_with === "authoritative" ? "Old or different" : "Different", "warn"];
+}
+
 function renderPropagation(p) {
   const sheet = $("prop-sheet");
   sheet.replaceChildren();
+  const where = p.scope === "country" ? `from ${countryLabel(p.country)}` : p.scope === "global" ? "from the big public resolvers" : "worldwide";
+
+  // --- Headline: one number, then the sentence
   const head = el("div", "p-6 sm:p-10");
+  const meter = el("div", "mt-5 h-2 max-w-xl overflow-hidden rounded-full bg-canvas");
+  const fill = el("div", `h-full rounded-full ${p.status === "pass" ? "bg-pass" : p.status === "error" ? "bg-ink/30" : "bg-warn"}`);
+  fill.style.width = `${p.percent || 0}%`;
+  meter.append(fill);
   add(head,
     add(el("div", "flex flex-wrap items-center gap-3"),
       el("h2", "display break-anywhere text-[1.75rem] font-extrabold leading-tight text-navy sm:text-4xl", p.domain),
       el("span", "rounded-md bg-canvas px-2 py-1 font-mono text-sm font-semibold text-blue", p.type),
       pill(p.status)),
-    el("p", "mt-3 max-w-3xl text-[15px] text-navy", p.summary));
+    add(el("div", "mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1"),
+      el("span", "display tabular text-5xl font-extrabold text-navy", `${p.percent ?? 0}%`),
+      el("span", "text-[15px] text-ink/70", `of ${p.counts?.answered ?? 0} resolvers that answered ${where} return ${p.compared_with === "authoritative" ? "the same as your nameserver" : "the most common answer"}`)),
+    meter,
+    el("p", "mt-4 max-w-3xl text-[15px] text-navy", p.summary));
   add(sheet, head);
 
-  // Responsive list: five columns from tablet width up; on phones each resolver is a
-  // compact block (name + verdict, then the answer, then TTL and timing).
-  const COLS = "sm:grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_4.5rem_4.5rem_5.5rem]";
-  const wrap = el("div", "border-t border-rule px-6 pb-6 sm:px-10 sm:pb-8");
-  const list = el("div", "divide-y divide-rule/70");
-  list.setAttribute("role", "table");
-  list.setAttribute("aria-label", `${p.type} record answers by resolver`);
-  const colHead = add(el("div", `hidden gap-4 py-3 text-[13px] text-ink/60 sm:grid ${COLS}`),
-    ...["Resolver", "Answer", "TTL", "Time", ""].map((h) => el("div", "", h)));
-  colHead.setAttribute("role", "row");
-  add(list, colHead);
-  const addRow = (r, isAuth) => {
-    const answer = r.error ? el("span", "text-fail", r.error)
+  // --- One tile per region (worldwide), coloured chips per country
+  const regional = (p.resolvers || []).filter((r) => r.group === "regional");
+  if (p.scope === "world" && regional.length) {
+    const grid = el("div", "grid gap-3 border-t border-rule bg-canvas/40 p-6 sm:grid-cols-2 sm:p-10 lg:grid-cols-3");
+    PROP_REGIONS.forEach((region) => {
+      const rows = regional.filter((r) => r.region === region);
+      if (!rows.length) return;
+      const answered = rows.filter((r) => !r.error), ok = answered.filter((r) => r.matches);
+      const status = !answered.length ? "error" : ok.length === answered.length ? "pass" : "warn";
+      const tile = el("div", `min-w-0 rounded-xl border-t-4 bg-white p-4 shadow-sm ${status === "pass" ? "border-t-pass" : status === "warn" ? "border-t-warn" : "border-t-ink/30"}`);
+      const chips = el("ul", "mt-3 flex flex-wrap gap-1.5");
+      rows.sort((x, y) => countryLabel(x.country).localeCompare(countryLabel(y.country))).forEach((r) => {
+        const [, word, kind] = propVerdict(r, p);
+        const chip = el("li", `rounded-md px-1.5 py-0.5 text-[12px] ${kind === "pass" ? "bg-pass-tint text-pass" : kind === "warn" ? "bg-warn-tint font-semibold text-warn" : "bg-canvas text-ink/50"}`, countryLabel(r.country));
+        chip.title = `${countryLabel(r.country)}${r.city ? `, ${r.city}` : ""}: ${word}`;
+        add(chips, chip);
+      });
+      add(grid, add(tile,
+        add(el("div", "flex items-baseline justify-between gap-2"),
+          el("h3", "semi-wide font-bold text-navy", region),
+          el("span", "tabular text-[13px] font-semibold text-ink/70", answered.length ? `${ok.length} of ${answered.length} updated` : "No answers")),
+        chips));
+    });
+    add(sheet, grid);
+  }
+
+  // --- Detail list, grouped; a filter to see only the problems
+  const wrap = el("div", "border-t border-rule px-6 pb-6 pt-5 sm:px-10 sm:pb-8");
+  const filterBar = el("div", "mb-2 flex flex-wrap items-center gap-2");
+  filterBar.setAttribute("role", "group");
+  filterBar.setAttribute("aria-label", "Show");
+  const lists = el("div");
+  let show = "all";
+  const counts = { all: (p.resolvers || []).length, warn: (p.resolvers || []).filter((r) => r.matches === false).length, none: (p.resolvers || []).filter((r) => r.error).length };
+  [["all", "All"], ["warn", "Old or different"], ["none", "No answer"]].forEach(([key, label]) => {
+    const b = el("button", "rounded-full border px-3 py-1 text-[13px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", `${label} (${counts[key]})`);
+    b.type = "button";
+    b.dataset.key = key;
+    b.addEventListener("click", () => { show = key; paint(); });
+    add(filterBar, b);
+  });
+  const COLS = "sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1.7fr)_4rem_4rem_6.5rem]";
+  const rowEl = (r, isAuth) => {
+    const answer = r.error ? el("span", "text-ink/50", r.error)
       : r.rcode !== "NOERROR" ? el("span", "font-mono text-warn", r.rcode)
-      : r.values.length ? add(el("div", "space-y-0.5"), ...r.values.map((v) => el("div", "break-anywhere font-mono text-[13px]", v)))
+      : r.values.length ? add(el("div", "space-y-0.5"), ...r.values.slice(0, 6).map((v) => el("div", "break-anywhere font-mono text-[13px]", v)),
+                              r.values.length > 6 ? el("div", "text-[12px] text-ink/50", `and ${r.values.length - 6} more`) : null)
       : el("span", "text-ink/50", "No records");
-    const match = isAuth ? el("span", "text-xs font-semibold text-blue", "Source")
-      : r.matches === true ? el("span", "text-xs font-semibold text-pass", "Matches")
-      : r.matches === false ? el("span", "text-xs font-semibold text-warn", "Different")
-      : el("span", "text-xs font-semibold text-ink/50", "No answer");
+    const [cls, word] = isAuth ? ["text-blue", "Source"] : propVerdict(r, p);
     const ttl = r.ttl != null ? `${r.ttl} s` : "—", time = r.rtt_ms != null ? `${r.rtt_ms} ms` : "—";
-    const rowEl = el("div", `grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1.5 py-3 ${COLS} ${isAuth ? "-mx-3 rounded-lg bg-sky/5 px-3" : ""}`);
-    rowEl.setAttribute("role", "row");
-    add(list, add(rowEl,
-      add(el("div", "order-1 min-w-0"), el("div", "break-anywhere font-semibold text-navy", r.name),
-          el("div", "break-anywhere text-[12px] text-ink/60", isAuth ? "Your authoritative nameserver" : `${r.location}, ${r.ip}`)),
-      add(el("div", "order-2 justify-self-end sm:order-5 sm:justify-self-start"), match),
+    const place = isAuth ? "Your authoritative nameserver"
+      : r.group === "regional" ? [r.city, countryLabel(r.country)].filter(Boolean).join(", ") : r.location;
+    const who = r.group === "regional" ? `${r.org || r.hostname || "Unnamed resolver"}, ${r.ip}` : r.ip;
+    const row = el("div", `grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1 py-3 ${COLS} ${isAuth ? "-mx-3 rounded-lg bg-sky/5 px-3" : ""}`);
+    row.setAttribute("role", "row");
+    return add(row,
+      add(el("div", "order-1 min-w-0"),
+        el("div", "break-anywhere font-semibold text-navy", isAuth ? r.name : r.group === "regional" ? place : r.name),
+        el("div", "break-anywhere text-[12px] text-ink/60", isAuth ? place : r.group === "regional" ? who : `${place}, ${who}`)),
+      add(el("div", "order-2 justify-self-end sm:order-5 sm:justify-self-start"), el("span", `text-xs font-semibold ${cls}`, word)),
       add(el("div", "order-3 col-span-2 min-w-0 sm:order-2 sm:col-span-1"), answer),
       el("div", "tabular order-4 col-span-2 font-mono text-[12px] text-ink/60 sm:hidden", `TTL ${ttl}, ${time}`),
       el("div", "tabular hidden font-mono text-[13px] sm:order-3 sm:block", ttl),
-      el("div", "tabular hidden font-mono text-[13px] sm:order-4 sm:block", time)));
+      el("div", "tabular hidden font-mono text-[13px] sm:order-4 sm:block", time));
   };
-  if (p.authoritative) addRow(p.authoritative, true);
-  (p.resolvers || []).forEach((r) => addRow(r, false));
-  add(sheet, add(wrap, list));
-  add(sheet, add(el("div", "flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-rule px-6 py-5 sm:px-10"),
-    actionButton("Check again", () => runPropagation(p.domain, p.type)),
-    el("p", "text-[13px] text-ink/60", `${p.note} Results can be up to 30 seconds old.`)));
+  const groupBlock = (title, rows, open = true) => {
+    const keep = rows.filter((r) => show === "all" || (show === "warn" ? r.matches === false : r.error));
+    if (!keep.length) return null;
+    const list = el("div", "divide-y divide-rule/70");
+    list.setAttribute("role", "table");
+    list.setAttribute("aria-label", title);
+    keep.forEach((r) => add(list, rowEl(r, false)));
+    const d = el("details", "group border-t border-rule first:border-t-0");
+    d.open = open;
+    const ok = rows.filter((r) => r.matches).length, answered = rows.filter((r) => !r.error).length;
+    add(d, add(el("summary", "flex cursor-pointer list-none items-baseline justify-between gap-3 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky"),
+      add(el("span", "flex items-baseline gap-2"), el("span", "text-ink/40 transition group-open:rotate-90", "▸"), el("span", "semi-wide font-bold text-navy", title)),
+      el("span", "tabular text-[13px] text-ink/60", `${ok} of ${answered} updated`)), list);
+    return d;
+  };
+  function paint() {
+    filterBar.querySelectorAll("button").forEach((b) => {
+      const on = b.dataset.key === show;
+      b.className = `rounded-full border px-3 py-1 text-[13px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky ${on ? "border-navy bg-navy text-white" : "border-rule bg-white text-ink/70 hover:border-sky"}`;
+      b.setAttribute("aria-pressed", String(on));
+    });
+    const blocks = [];
+    if (p.authoritative && show === "all") {
+      const auth = el("div", "divide-y divide-rule/70 pb-2");
+      add(auth, rowEl(p.authoritative, true));
+      blocks.push(auth);
+    }
+    const anycast = (p.resolvers || []).filter((r) => r.group !== "regional");
+    // Open a group when it has an old/different answer (or when filtering), so problems are visible at once.
+    const openIf = (rows) => show !== "all" || rows.some((r) => r.matches === false);
+    if (p.scope === "country") blocks.push(groupBlock(`Resolvers in ${countryLabel(p.country)}`, regional));
+    else PROP_REGIONS.forEach((region) => { const rows = regional.filter((r) => r.region === region); blocks.push(groupBlock(region, rows, openIf(rows))); });
+    blocks.push(groupBlock("Big public resolvers (anycast)", anycast, p.scope === "global" || openIf(anycast)));
+    const real = blocks.filter(Boolean);
+    lists.replaceChildren(...(real.length ? real : [el("p", "py-6 text-center text-[14px] text-ink/60", "Nothing to show here.")]));
+  }
+  paint();
+  add(sheet, add(wrap, filterBar, lists));
+  add(sheet, add(el("div", "space-y-3 border-t border-rule px-6 py-5 sm:px-10"),
+    add(el("div", "flex flex-wrap items-center gap-3"),
+      actionButton("Check again", () => runPropagation(p.domain, p.type, p.scope, p.country)),
+      el("span", "text-[13px] text-ink/60", "Results can be up to 30 seconds old.")),
+    ...(p.notes || [p.note]).filter(Boolean).map((n) => el("p", "max-w-3xl text-[13px] text-ink/60", n))));
 }
 
-async function runPropagation(domain, type) {
+/* Country picker: filled from the resolvers that are currently reliable */
+let propLocations = null;
+async function loadPropLocations() {
+  if (propLocations) return propLocations;
+  const sel = $("prop-country");
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/propagation/locations`);
+    const data = await res.json();
+    if (!data.available) throw new Error("unavailable");
+    propLocations = data.countries;
+    const groups = PROP_REGIONS.map((region) => {
+      const items = propLocations.filter((c) => c.region === region).sort((a, b) => countryLabel(a.code).localeCompare(countryLabel(b.code)));
+      if (!items.length) return null;
+      const g = document.createElement("optgroup");
+      g.label = region;
+      items.forEach((c) => { const o = el("option", "", `${countryLabel(c.code)} (${c.resolvers})`); o.value = c.code; g.append(o); });
+      return g;
+    }).filter(Boolean);
+    const first = el("option", "", "Pick a country");
+    first.value = "";
+    sel.replaceChildren(first, ...groups);
+    let guess = "";
+    try { guess = (navigator.language || "").split("-")[1] || ""; } catch { /* fine */ }
+    if (propLocations.some((c) => c.code === guess)) sel.value = guess;
+  } catch {
+    const o = el("option", "", "Country list unavailable right now");
+    o.value = "";
+    sel.replaceChildren(o);
+  }
+  return propLocations;
+}
+function syncScope() {
+  const scope = propScope();
+  $("prop-country").hidden = scope !== "country";
+  $("prop-scope-hint").textContent = PROP_HINT[scope];
+  if (scope === "country") loadPropLocations();
+}
+
+async function runPropagation(domain, type, scope, country) {
   domain = domain.trim();
   if (!domain) return;
+  scope = scope || propScope();
+  country = scope === "country" ? (country || $("prop-country").value) : "";
+  document.querySelectorAll('input[name="prop-scope"]').forEach((i) => { i.checked = i.value === scope; });
+  syncScope();
+  if (scope === "country" && country) { await loadPropLocations(); $("prop-country").value = country; }
   $("prop-domain").value = domain;
   $("prop-type").value = type;
   $("prop-error").classList.add("hidden");
+  if (scope === "country" && !country) {
+    const box = $("prop-error");
+    box.textContent = "Pick a country first.";
+    box.classList.remove("hidden");
+    $("prop-country").focus();
+    return;
+  }
   $("prop-btn").disabled = true;
   $("prop-btn").textContent = "Checking…";
-  $("prop-sheet").replaceChildren(el("p", "animate-pulse p-6 text-lg text-ink/60 sm:p-10", `Asking eight resolvers for the ${type} record of ${domain}…`));
+  const asking = scope === "world" ? "resolvers in up to 60 countries" : scope === "country" ? `resolvers in ${countryLabel(country)}` : "eight big public resolvers";
+  $("prop-sheet").replaceChildren(el("p", "animate-pulse p-6 text-lg text-ink/60 sm:p-10", `Asking ${asking} for the ${type} record of ${domain}… This takes a few seconds.`));
   try {
-    const res = await fetch(`${API_BASE}/api/v1/propagation?domain=${encodeURIComponent(domain)}&type=${encodeURIComponent(type)}`, { signal: AbortSignal.timeout(30000) });
+    const q = new URLSearchParams({ domain, type, scope });
+    if (country) q.set("country", country);
+    const res = await fetch(`${API_BASE}/api/v1/propagation?${q}`, { signal: AbortSignal.timeout(45000) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `The check failed (HTTP ${res.status}).`);
     renderPropagation(data);
@@ -2783,18 +2957,39 @@ const SAMPLE = {
 };
 
 // Sample for the propagation tab (shown only in the design preview)
-const SAMPLE_PROP = {
-  domain: "www.northwind.example", type: "A", status: "warn",
-  summary: "1 of 8 resolvers show a different answer. They're still serving a cached older record; this clears as their copies expire (see TTL).",
-  note: "Anycast resolvers answer from their site nearest to our server, so this shows how the change looks from that region.",
-  authoritative: { name: "ns1.dnshost.example", ip: "198.51.100.53", location: "Authoritative", values: ["203.0.113.24"], ttl: 300, rcode: "NOERROR", rtt_ms: 18, matches: true },
-  resolvers: [
-    ["Cloudflare", "1.1.1.1", "Anycast", 12], ["Google", "8.8.8.8", "Anycast", 15], ["Quad9", "9.9.9.9", "Anycast", 21],
-    ["OpenDNS", "208.67.222.222", "Anycast", 19], ["AdGuard", "94.140.14.14", "Anycast", 33], ["Control D", "76.76.2.0", "Anycast", 25],
-    ["Lumen (Level 3)", "4.2.2.1", "United States", 28],
-  ].map(([name, ip, location, rtt]) => ({ name, ip, location, values: ["203.0.113.24"], ttl: 287, rcode: "NOERROR", rtt_ms: rtt, matches: true }))
-   .concat([{ name: "DNS.Watch", ip: "84.200.69.80", location: "Germany", values: ["198.51.100.7"], ttl: 2140, rcode: "NOERROR", rtt_ms: 96, matches: false }]),
-};
+const SAMPLE_PROP = (() => {
+  const NEW = ["203.0.113.24"], OLD = ["198.51.100.7"];
+  const regional = [
+    ["US", "Ashburn", "Example Cable Co"], ["CA", "Toronto", "Maple Net"], ["MX", "Monterrey", "Red Norte"], ["BR", "São Paulo", "Rede Sul"],
+    ["AR", "Córdoba", "Pampa Net"], ["GB", "London", "Thames Broadband"], ["DE", "Frankfurt", "Main Netz"], ["FR", "Lyon", "Réseau Rhône"],
+    ["NL", "Amsterdam", "Polder ISP"], ["PL", "Warsaw", "Wisła Net"], ["TR", "Istanbul", "Boğaz Telekom"], ["AE", "Dubai", "Gulf Link"],
+    ["ZA", "Johannesburg", "Highveld Fibre"], ["NG", "Lagos", "Lagoon Net"], ["KE", "Nairobi", "Savanna ISP"], ["IN", "Mumbai", "Konkan Broadband"], ["SG", "Singapore", "Strait Fibre"], ["JP", "Tokyo", "Sakura Net"], ["ID", "Jakarta", "Nusantara Net"],
+    ["AU", "Sydney", "Harbour Broadband"], ["NZ", "Auckland", "Kiwi Fibre"],
+  ];
+  const REGION_OF = { US: "North America", CA: "North America", MX: "North America", BR: "South America", AR: "South America",
+    GB: "Europe", DE: "Europe", FR: "Europe", NL: "Europe", PL: "Europe", TR: "Middle East", AE: "Middle East",
+    ZA: "Africa", NG: "Africa", KE: "Africa", IN: "Asia", SG: "Asia", JP: "Asia", ID: "Asia", AU: "Oceania", NZ: "Oceania" };
+  const stale = new Set(["BR", "TR", "JP"]), silent = new Set(["NG"]);
+  const rows = regional.map(([cc, city, org], i) => ({
+    name: org, org, ip: `192.0.2.${10 + i}`, location: `${city}, ${cc}`, group: "regional", region: REGION_OF[cc], country: cc, city,
+    values: silent.has(cc) ? [] : stale.has(cc) ? OLD : NEW, ttl: stale.has(cc) ? 2140 : 287, rcode: silent.has(cc) ? null : "NOERROR",
+    rtt_ms: silent.has(cc) ? null : 40 + i * 9, error: silent.has(cc) ? "No answer within 3 seconds" : null,
+    matches: silent.has(cc) ? null : !stale.has(cc) }));
+  const anycast = [["Cloudflare", "1.1.1.1"], ["Google", "8.8.8.8"], ["Quad9", "9.9.9.9"], ["OpenDNS", "208.67.222.222"],
+    ["AdGuard", "94.140.14.14"], ["Control D", "76.76.2.0"], ["Lumen (Level 3)", "4.2.2.1"], ["DNS.Watch", "84.200.69.80"]]
+    .map(([name, ip], i) => ({ name, ip, location: "Anycast", group: "anycast", region: "Global", values: NEW, ttl: 287, rcode: "NOERROR", rtt_ms: 12 + i * 3, error: null, matches: true }));
+  const all = rows.concat(anycast);
+  const answered = all.filter((r) => !r.error), ok = answered.filter((r) => r.matches);
+  return {
+    domain: "www.northwind.example", type: "A", scope: "world", country: null, status: "warn", compared_with: "authoritative",
+    percent: Math.round((100 * ok.length) / answered.length), counts: { answered: answered.length, matching: ok.length, asked: all.length },
+    summary: `${ok.length} of ${answered.length} resolvers (${Math.round((100 * ok.length) / answered.length)}%) already return the same as your nameserver. The rest still serve an older cached copy, which clears when its TTL runs out.`,
+    authoritative: { name: "ns1.dnshost.example", ip: "198.51.100.53", location: "Authoritative", group: "authoritative", values: NEW, ttl: 300, rcode: "NOERROR", rtt_ms: 18, matches: true },
+    resolvers: all,
+    notes: ["1 regional resolver didn't answer in 3 seconds. Open resolvers come and go, so this isn't about your domain.",
+            "Big public resolvers (Google, Cloudflare and others) answer from their site nearest to our server. Regional resolvers are run by ISPs and organisations in each country (list from public-dns.info), so they show what people there see."],
+  };
+})();
 
 /* =====================================================================
    STREAMING: show each section as soon as its check finishes
@@ -2995,6 +3190,7 @@ function run(domain) {
    ===================================================================== */
 buildProviderChoices();
 $("prop-form").addEventListener("submit", (e) => { e.preventDefault(); runPropagation($("prop-domain").value, $("prop-type").value); });
+document.querySelectorAll('input[name="prop-scope"]').forEach((i) => i.addEventListener("change", syncScope));
 $("spf-form").addEventListener("input", updateSpf);
 $("spf-form").addEventListener("submit", (e) => e.preventDefault());
 $("spf-copy").addEventListener("click", () => copyText($("spf-output").textContent, $("spf-copy"), $("spf-output")));
