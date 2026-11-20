@@ -59,6 +59,7 @@ if not _have("fastapi"):
         def __init__(self, *a, **k): pass
         def add_middleware(self, *a, **k): pass
         def get(self, *a, **k): return lambda f: f
+        def post(self, *a, **k): return lambda f: f
 
     class _HTTPException(Exception):
         def __init__(self, status_code=None, detail=None):
@@ -67,7 +68,12 @@ if not _have("fastapi"):
 
     fa.FastAPI, fa.HTTPException = _App, _HTTPException
     fa.Query = lambda default=None, *a, **k: default
-    fa.Request = fa.Response = object
+    fa.Request = object
+
+    class _Response:
+        def __init__(self, content=b"", media_type=None, headers=None, status_code=200):
+            self.body, self.media_type, self.headers, self.status_code = content, media_type, dict(headers or {}), status_code
+    fa.Response = _Response
     sys.modules["fastapi"] = fa
     enc = types.ModuleType("fastapi.encoders")
     enc.jsonable_encoder = lambda o: o
@@ -101,9 +107,40 @@ class FakeResponse:
 
 
 class FakeRequest:
-    def __init__(self, headers=None, host="10.0.0.9"):
+    def __init__(self, headers=None, host="10.0.0.9", body=b""):
         self.headers = {k.lower(): v for k, v in (headers or {}).items()}
         self.client = types.SimpleNamespace(host=host)
+        self._body = body
+
+    async def body(self):
+        return self._body
+
+
+class FakeRedis:
+    """Just enough of Redis (as Upstash's REST pipeline) for the tests."""
+    def __init__(self):
+        self.data, self.ttl = {}, {}
+
+    def __call__(self, commands):
+        out = []
+        for c in commands:
+            op, key, *rest = c[0].upper(), *c[1:]
+            if op == "GET":
+                out.append({"result": self.data.get(key)})
+            elif op == "SET":
+                if "NX" in rest and key in self.data:
+                    out.append({"result": None}); continue
+                self.data[key] = rest[0]
+                if "EX" in rest:
+                    self.ttl[key] = int(rest[rest.index("EX") + 1])
+                out.append({"result": "OK"})
+            elif op == "TTL":
+                out.append({"result": self.ttl.get(key, -2)})
+            elif op == "INCR":
+                self.data[key] = str(int(self.data.get(key, 0)) + 1); out.append({"result": int(self.data[key])})
+            else:
+                out.append({"result": 1})
+        return out
 
 
 class FakeRecord:
@@ -400,6 +437,109 @@ class PropagationTests(Patched):
             with self.subTest(**kwargs), self.assertRaises(Exception) as err:
                 run(main.propagation(FakeRequest(), FakeResponse(), domain="example.com", type="A", **kwargs))
             self.assertEqual(err.exception.status_code, 400)
+
+
+RAW_EMAIL = (b"Received: from mail.sender.example (mail.sender.example [45.33.20.7]) by mx.cloudflare.net with ESMTPS id x; Fri, 20 Nov 2026 10:00:00 +0000\r\n"
+             b"From: Priya <priya@sender.example>\r\nTo: test+abc@check.example.com\r\nSubject: Quote\r\n"
+             b"Message-ID: <1@sender.example>\r\nDate: Fri, 20 Nov 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\n"
+             b"Content-Type: text/html; charset=utf-8\r\n\r\n<p>Hello <a href=\"https://bit.ly/x\">here</a></p>\r\n")
+
+
+class MailTestTests(Patched):
+    def enable(self):
+        self.db = FakeRedis()
+        self.patch(USAGE_DB_URL="https://db.example", USAGE_DB_TOKEN="t", _redis_pipeline=self.db,
+                   MAILTEST_ADDRESS="test@check.example.com", MAILTEST_SECRET="s" * 32)
+
+    def test_switched_off_until_configured(self):
+        self.patch(MAILTEST_ADDRESS="", MAILTEST_SECRET="")
+        with self.assertRaises(Exception) as err:
+            run(main.mailtest_new(FakeRequest(), FakeResponse()))
+        self.assertEqual(err.exception.status_code, 503)
+
+    def test_addresses_use_plus_tags_or_a_catch_all(self):
+        self.patch(MAILTEST_ADDRESS="test@check.example.com")
+        self.assertEqual(main.mailtest_address("abc12345"), "test+abc12345@check.example.com")
+        self.patch(MAILTEST_ADDRESS="*@example.com")
+        self.assertEqual(main.mailtest_address("abc12345"), "abc12345@example.com")
+
+    def test_a_test_goes_from_waiting_to_a_report(self):
+        self.enable()
+        async def fake_analysis(raw, env_from):
+            return {"score": 9.5, "from_domain": "sender.example", "env": env_from}
+        self.patch(analyze_test_email=fake_analysis)
+        new = run(main.mailtest_new(FakeRequest(), FakeResponse()))
+        self.assertTrue(new["address"].startswith("test+") and new["address"].endswith("@check.example.com"))
+        self.assertEqual(run(main.mailtest_result(new["id"], FakeResponse()))["state"], "waiting")
+        with self.assertRaises(Exception) as bad:
+            run(main.mailtest_inbound(FakeRequest({"x-vdig-secret": "wrong"}, body=RAW_EMAIL), id=new["id"]))
+        self.assertEqual(bad.exception.status_code, 401)
+        ok = run(main.mailtest_inbound(FakeRequest({"x-vdig-secret": "s" * 32, "x-envelope-from": "bounce@sender.example"}, body=RAW_EMAIL), id=new["id"]))
+        self.assertTrue(ok["ok"])
+        done = run(main.mailtest_result(new["id"], FakeResponse()))
+        self.assertEqual((done["state"], done["report"]["score"], done["report"]["env"]), ("done", 9.5, "bounce@sender.example"))
+        self.assertIn("From: Priya", done["report"]["raw_headers"])
+
+    def test_an_expired_or_unknown_address_is_refused(self):
+        self.enable()
+        with self.assertRaises(Exception) as err:
+            run(main.mailtest_inbound(FakeRequest({"x-vdig-secret": "s" * 32}, body=RAW_EMAIL), id="zzzzzzzzzzzz"))
+        self.assertEqual(err.exception.status_code, 404)
+
+    def test_visitors_are_limited_per_day(self):
+        self.enable()
+        self.patch(MAILTEST_PER_IP_DAY=2)
+        run(main.mailtest_new(FakeRequest(), FakeResponse())); run(main.mailtest_new(FakeRequest(), FakeResponse()))
+        with self.assertRaises(Exception) as err:
+            run(main.mailtest_new(FakeRequest(), FakeResponse()))
+        self.assertEqual(err.exception.status_code, 429)
+
+    def test_the_report_explains_every_deduction(self):
+        async def rdns(ip): return {"ptr": [], "forward_confirmed": False}
+        async def bls(domain, targets):
+            return {"status": "pass", "ips": [{"ip": t[0], "roles": t[1], "lists": [{"list": "SpamCop", "state": "listed"}]} for t in targets],
+                    "domain_lists": [], "errors": [], "warnings": [], "notes": []}
+        async def dmarc(domain): return {"found": True, "policy": "none", "adkim": "r", "aspf": "r", "record": "v=DMARC1; p=none"}
+        self.patch(_spf_check=lambda ip, mf, helo: ("softfail", "not listed"), _dkim_check=lambda raw: [],
+                   _spamassassin=lambda text: {"success": True, "score": 2.5, "rules": [{"score": "2.5", "description": "Short link"}]},
+                   check_rdns=rdns, analyze_blocklists=bls, analyze_dmarc=dmarc)
+        rep = run(main.analyze_test_email(RAW_EMAIL, "bounce@sender.example"))
+        self.assertEqual((rep["sending_ip"], rep["helo"]), ("45.33.20.7", "mail.sender.example"))
+        areas = {d["area"] for d in rep["deductions"]}
+        self.assertTrue({"SPF", "DKIM", "DMARC", "Blocklists", "Reverse DNS", "SpamAssassin", "Content"} <= areas)
+        self.assertAlmostEqual(rep["score"], max(0, 10 - sum(d["points"] for d in rep["deductions"])))
+        self.assertEqual(rep["content"]["shorteners"], ["bit.ly"])
+        self.assertEqual(rep["dmarc"]["result"], "fail")
+
+
+class ScreenshotTests(Patched):
+    def setUp(self):
+        async def ips(host): return ["93.184.215.14"]
+        self.patch(_ips_of=ips, BROWSERLESS_TOKEN="tok", USAGE_DB_URL="", USAGE_DB_TOKEN="")
+
+    def test_switched_off_without_a_token(self):
+        self.patch(BROWSERLESS_TOKEN="")
+        with self.assertRaises(Exception) as err:
+            run(main.screenshot(domain="example.com"))
+        self.assertEqual(err.exception.status_code, 503)
+
+    def test_a_screenshot_is_returned_and_cached_at_the_edge(self):
+        calls = []
+        def shot(url, with_viewport):
+            calls.append(with_viewport)
+            return (400, b"Unknown field viewport", "text/plain") if with_viewport else (200, b"JPEGDATA", "image/jpeg")
+        self.patch(_browserless_shot=shot)
+        res = run(main.screenshot(domain="Example.com"))
+        self.assertEqual((res.body, res.media_type), (b"JPEGDATA", "image/jpeg"))
+        self.assertIn("s-maxage", res.headers["Cache-Control"])
+        self.assertEqual(calls, [True, False])     # retried without the viewport field
+
+    def test_private_addresses_are_never_screenshotted(self):
+        async def private(host): return ["10.0.0.5"]
+        self.patch(_ips_of=private)
+        with self.assertRaises(Exception) as err:
+            run(main.screenshot(domain="intranet.example.com"))
+        self.assertEqual(err.exception.status_code, 404)
 
 
 class FrontendTests(unittest.TestCase):
