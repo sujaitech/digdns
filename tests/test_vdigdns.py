@@ -321,6 +321,87 @@ class UsageLogTests(Patched):
         self.assertEqual(ok["entries"][0]["target"], "example.com")
 
 
+class PropagationTests(Patched):
+    CSV = (
+        "ip_address,name,as_number,as_org,country_code,city,version,error,dnssec,reliability,checked_at,created_at\n"
+        "8.8.8.8,dns.google.,15169,Google LLC,US,,,,true,1.00,2026-11-20T17:43:28Z,2020-07-16T14:19:04Z\n"          # anycast: out
+        "2a01:4f8::1,x.de.,24940,Hetzner,DE,Falkenstein,,,true,1.00,2026-11-20T17:43:32Z,2020-07-17T22:21:13Z\n"    # IPv6: out
+        "194.27.192.6,,15843,Uni,TR,,,,false,0.48,2026-11-20T17:43:29Z,2020-07-16T15:08:39Z\n"                      # unreliable: out
+        "195.243.214.4,,3320,Deutsche Telekom AG,DE,Oberhausen,,,false,1.00,2026-11-01T17:43:30Z,2020-08-08T20:06:24Z\n"  # stale: out
+        "10.1.1.1,,64512,Private,DE,,,,false,1.00,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"                      # private: out
+        "45.90.28.1,dns.nextdns.io.,34939,NextDNS,DE,,,,false,1.00,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"     # anycast by name: out
+        "61.1.1.1,,1111,BSNL,IN,Mumbai,,timeout,false,1.00,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"             # has error: out
+        "103.1.1.1,ns1.isp-a.in.,2222,ISP A,IN,Mumbai,,,false,1.00,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"
+        "103.1.1.2,ns2.isp-a.in.,2222,ISP A,IN,Mumbai,,,false,0.995,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"
+        "117.1.1.1,,3333,ISP B,IN,Chennai,,,false,0.99,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n"
+        "212.1.1.1,ns.isp.de.,4444,ISP DE,DE,Berlin,,,false,1.00,2026-11-20T17:43:30Z,2020-08-08T20:06:24Z\n")
+    NOW = main.datetime(2026, 11, 21, tzinfo=main.timezone.utc)
+
+    def test_only_reliable_unicast_ipv4_resolvers_are_kept(self):
+        pool = main.build_resolver_pool(self.CSV, now=self.NOW)
+        kept = {r["ip"] for v in pool["countries"].values() for r in v}
+        self.assertEqual(kept, {"103.1.1.1", "103.1.1.2", "117.1.1.1", "212.1.1.1"})
+        self.assertEqual(pool["listed"], 11)
+
+    def test_a_country_gets_different_networks_first(self):
+        india = main.build_resolver_pool(self.CSV, now=self.NOW)["countries"]["IN"]
+        self.assertEqual([r["asn"] for r in india], [2222, 3333, 2222])
+
+    def test_worldwide_takes_one_per_country_and_country_mode_takes_several(self):
+        pool = main.build_resolver_pool(self.CSV, now=self.NOW)
+        world = main.pick_resolvers(pool, "world", None)
+        self.assertEqual(sorted(r["country"] for r in world), ["DE", "IN"])
+        self.assertEqual(len(main.pick_resolvers(pool, "country", "IN")), 3)
+        self.assertEqual(main.pick_resolvers(pool, "country", "ZZ"), [])
+
+    def _stub_dns(self, answers, pool):
+        async def fake_row(name, ip, place, qname, rtype, recursive, timeout=4.0, **extra):
+            vals = answers.get(ip)
+            row = {"name": name, "ip": ip, "location": place, "values": vals or [], "ttl": 300, "rcode": "NOERROR",
+                   "rtt_ms": 10, "error": None if vals is not None else "No answer", **extra}
+            return row
+
+        async def fake_zone(domain): return "example.com", ["ns1.example.net"]
+        async def fake_ips(host): return ["198.18.0.53"]
+        async def fake_pool(): return pool
+        self.patch(_ask_for_row=fake_row, find_zone=fake_zone, _ips_of=fake_ips, resolver_pool=fake_pool,
+                   is_public_ip=lambda ip: True)
+
+    def test_resolvers_are_compared_with_the_authoritative_answer(self):
+        pool = main.build_resolver_pool(self.CSV, now=self.NOW)
+        new, old = ["203.0.113.2"], ["203.0.113.1"]
+        answers = {ip: new for _, ip, _ in main.PUBLIC_RESOLVERS}
+        answers.update({"198.18.0.53": new, "103.1.1.1": old, "212.1.1.1": new})
+        self._stub_dns(answers, pool)
+        res = run(main.check_propagation("www.example.com", "A", "world"))
+        self.assertEqual(res["compared_with"], "authoritative")
+        stale = [r["ip"] for r in res["resolvers"] if r["matches"] is False]
+        self.assertEqual(stale, ["103.1.1.1"])
+        self.assertEqual(res["status"], "warn")
+        self.assertEqual(res["counts"]["matching"], len(main.PUBLIC_RESOLVERS) + 1)
+        self.assertIn("Asia", res["by_region"])
+
+    def test_location_specific_answers_are_explained_not_called_stale(self):
+        pool = main.build_resolver_pool(self.CSV, now=self.NOW)
+        answers = {ip: [f"203.0.113.{i}"] for i, (_, ip, _) in enumerate(main.PUBLIC_RESOLVERS)}
+        answers.update({"198.18.0.53": ["203.0.113.200"], "103.1.1.1": ["198.51.100.1"], "212.1.1.1": ["198.51.100.2"]})
+        self._stub_dns(answers, pool)
+        res = run(main.check_propagation("cdn.example.com", "A", "world"))
+        self.assertIn("GeoDNS", res["note"])
+
+    def test_without_the_worldwide_list_the_big_resolvers_still_answer(self):
+        self._stub_dns({ip: ["203.0.113.2"] for _, ip, _ in main.PUBLIC_RESOLVERS} | {"198.18.0.53": ["203.0.113.2"]}, None)
+        res = run(main.check_propagation("www.example.com", "A", "world"))
+        self.assertEqual(res["status"], "pass")
+        self.assertIn("couldn't be loaded", res["note"])
+
+    def test_bad_scope_or_missing_country_is_refused(self):
+        for kwargs in ({"scope": "moon"}, {"scope": "country", "country": None}, {"scope": "country", "country": "1x"}):
+            with self.subTest(**kwargs), self.assertRaises(Exception) as err:
+                run(main.propagation(FakeRequest(), FakeResponse(), domain="example.com", type="A", **kwargs))
+            self.assertEqual(err.exception.status_code, 400)
+
+
 class FrontendTests(unittest.TestCase):
     """Cheap checks on the page itself."""
     def setUp(self):
