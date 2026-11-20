@@ -117,6 +117,7 @@
           <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
           <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Headers &amp; bounces</a>
+          <a href="#email-test" data-nav="mailtest" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Email test</a>
         </nav>
       </div>
 
@@ -185,6 +186,12 @@
       <div id="head-headers" hidden>
         <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Explain an email’s headers or a bounce</h1>
         <p class="mt-3 max-w-2xl text-white/80">Paste a message’s headers to see who really sent it, whether it passed SPF, DKIM and DMARC, and where it was delayed. Or paste a bounce (“Undelivered Mail Returned to Sender”) to find out why it failed and how to fix it. It’s all worked out in your browser: nothing you paste is sent anywhere.</p>
+      </div>
+
+      <!-- Header block: email test -->
+      <div id="head-mailtest" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Test a real email</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Get a one-time address, send it an email from the account or app you want to check, and see how it scores: authentication, the sending server’s reputation, a SpamAssassin spam score and the content.</p>
       </div>
 
       <!-- Header block: DMARC builder -->
@@ -409,6 +416,25 @@
     </div>
   </main>
 
+  <!-- ================= VIEW: EMAIL TEST ================= -->
+  <main id="view-mailtest" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div id="mt-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
+    <article id="mt-sheet" class="overflow-hidden rounded-lg border border-rule bg-white" aria-live="polite">
+      <div class="grid gap-x-10 gap-y-4 px-6 py-8 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]">
+        <h2 class="text-[17px] font-semibold text-navy">How it works</h2>
+        <div class="space-y-4 text-[15px] leading-relaxed">
+          <ol class="list-decimal space-y-1.5 pl-5">
+            <li>Get a test address. It works for one hour.</li>
+            <li>Send it a normal email from the mailbox, website form or app you want to check, written the way you’d write to a customer.</li>
+            <li>Keep this page open. The report appears within a minute of the email arriving.</li>
+          </ol>
+          <button id="mt-start" type="button" class="slice">Get a test address</button>
+          <p class="text-[13px] text-ink/60">The email is kept for one hour, then deleted. To score it, its contents are sent to Postmark’s free SpamAssassin service. This can’t tell you whether Gmail or Outlook will put it in the inbox; nobody can without real test mailboxes there.</p>
+        </div>
+      </div>
+    </article>
+  </main>
+
   <!-- ================= VIEW: EMAIL HEADER ANALYZER ================= -->
   <main id="view-headers" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <article class="overflow-hidden rounded-lg border border-rule bg-white">
@@ -442,7 +468,7 @@
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere.
+    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. Website screenshots are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
   </footer>
 
 <script>
@@ -1096,7 +1122,7 @@ function bentoLayout(fill, groupStatus = () => null, attention = null) {
   return sheet;
 }
 const FINAL_RENDER = {
-  website: (d) => renderWebsite(d.website || {}), registration: (d) => renderRegistration(d.registration || {}),
+  website: (d) => renderWebsite(d.website || {}, d.domain), registration: (d) => renderRegistration(d.registration || {}),
   dns: (d) => renderDNS(d.dns), nameservers: (d) => renderNameservers(d.nameservers || {}),
   spf: (d) => renderSPF(d.spf, d.domain), dmarc: (d) => renderDMARC(d.dmarc, d.domain),
   dkim: (d) => renderDKIM(d.dkim || {}, d.domain), mail: (d) => renderMail(d.mail, d.providers),
@@ -1170,10 +1196,24 @@ function renderAttention(data) {
 /* ---- Website: up or down, redirects, technologies, security headers, raw headers ---- */
 function speedWord(ms) { return ms < 800 ? "fast" : ms < 1800 ? "moderate" : "slow"; }
 
-function renderWebsite(w) {
+/** The home page as a browser sees it. Loads after the report, cached for hours; hides itself if unavailable. */
+function screenshotFigure(domain) {
+  const fig = el("figure", "max-w-xl");
+  const link = el("a", "block overflow-hidden rounded-md border border-rule bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+  const src = `${API_BASE}/api/v1/screenshot?domain=${encodeURIComponent(domain)}`;
+  link.href = src; link.target = "_blank"; link.rel = "noopener";
+  const img = el("img", "block aspect-[16/10] w-full object-cover object-top");
+  Object.assign(img, { src, alt: `Screenshot of the home page of ${domain}`, loading: "lazy", decoding: "async", width: 1280, height: 800 });
+  img.addEventListener("error", () => fig.remove());
+  add(fig, add(link, img), el("figcaption", "mt-1.5 text-[12px] text-ink/55", "The home page in a 1280×800 browser window, captured by Browserless. Click to open full size."));
+  return fig;
+}
+
+function renderWebsite(w, domain) {
   const { wrap, body } = section("sec-web", "Website", w.status || "error", verdictWeb(w));
   add(body, findings(w));
   if (!w.status_code) return wrap;
+  if (domain && !window.DIGDNS_SAMPLE && ["up", "challenge", "client_error", "server_error"].includes(w.state)) add(body, screenshotFigure(domain));
 
   const grid = el("div", "grid gap-8 @xl:grid-cols-2");
   const left = el("div", "min-w-0");
@@ -2825,11 +2865,195 @@ List-Unsubscribe: <mailto:unsub@em.northwind.example>
 <html><body>Your order is on its way.</body></html>`;
 
 /* =====================================================================
+   EMAIL TEST: a one-hour address; the report appears when the email arrives
+   ===================================================================== */
+let mtPoll = null, mtSeq = 0;
+const SPF_WORDS = {
+  pass: "The sending server is allowed to send for this domain.", fail: "The sending server is NOT allowed to send for this domain.",
+  softfail: "The sending server isn’t on the domain’s list of senders.", neutral: "The domain’s SPF record makes no claim about this server.",
+  none: "There’s no SPF record to check against.", temperror: "A temporary DNS problem stopped the check.", permerror: "The domain’s SPF record is broken.",
+};
+const MT_STATUS = (r) => r === "pass" ? "pass" : /^(fail|permerror)$/.test(r) ? "fail" : "warn";
+
+function mtError(text) {
+  const box = $("mt-error");
+  box.textContent = text;
+  box.classList.toggle("hidden", !text);
+}
+async function startMailTest() {
+  mtError("");
+  const btn = $("mt-start");
+  if (btn) { btn.disabled = true; btn.textContent = "Getting an address…"; }
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/mailtest/new`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Couldn't start a test (HTTP ${res.status}).`);
+    history.replaceState(null, "", `#email-test=${data.id}`);
+    followMailTest(data.id, data);
+  } catch (err) {
+    mtError(err instanceof TypeError ? "Couldn't reach the VdigDNS service." : err.message);
+    if (btn) { btn.disabled = false; btn.textContent = "Get a test address"; }
+  }
+}
+
+function renderMtWaiting(t, state) {
+  const sheet = $("mt-sheet");
+  const mins = Math.max(1, Math.round((t.expires_in || 0) / 60));
+  const addr = el("code", "break-anywhere font-mono text-xl font-semibold text-navy sm:text-2xl", t.address);
+  const copy = actionButton("Copy address", () => copyText(t.address, copy, addr, "Copy address"));
+  const box = el("div", "grid gap-x-10 gap-y-4 px-6 py-8 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]");
+  add(box,
+    add(el("div", ""), el("h2", "text-[17px] font-semibold text-navy", "Your test address"),
+      el("p", "mt-1.5 text-[14px] text-ink/60", `Works for ${mins} more minute${mins === 1 ? "" : "s"}`)),
+    add(el("div", "min-w-0 space-y-4"),
+      add(el("div", "flex flex-wrap items-center gap-3"), addr, copy),
+      el("p", "text-[15px] leading-relaxed", "Send a normal email to this address from the mailbox or app you want to check. Write it like a real message: a test that just says “test” scores differently from what customers receive."),
+      add(el("p", "flex items-center gap-2 text-[14px] text-ink/70"),
+        el("span", "mark-glyph animate-pulse font-bold text-blue", "…"),
+        el("span", "", state === "analyzing" ? "Your email arrived. Checking it now; this takes up to half a minute." : "Waiting for your email. This page updates by itself.")),
+      actionButton("Start over with a new address", () => { stopMailTest(); history.replaceState(null, "", "#email-test"); startMailTest(); })));
+  sheet.replaceChildren(box);
+}
+
+function stopMailTest() { clearTimeout(mtPoll); mtPoll = null; mtSeq++; }
+function followMailTest(id, first) {
+  stopMailTest();
+  const seq = mtSeq;
+  if (first) renderMtWaiting(first, "waiting");
+  const tick = async () => {
+    if (seq !== mtSeq) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/mailtest/${encodeURIComponent(id)}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (seq !== mtSeq) return;
+      if (res.status === 404) { renderMtExpired(); return; }
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+      if (data.state === "done") { renderMailReport(data.report, data); return; }
+      renderMtWaiting(data, data.state);
+    } catch (err) {
+      mtError(err instanceof TypeError ? "Lost contact with VdigDNS; still trying." : err.message);
+    }
+    mtPoll = setTimeout(tick, document.hidden ? 15000 : 4000);
+  };
+  tick();
+}
+function renderMtExpired() {
+  stopMailTest();
+  const box = el("div", "space-y-4 px-6 py-8 sm:px-10");
+  add(box, el("p", "text-[15px]", "This test has expired or doesn’t exist. Test addresses work for one hour."),
+    actionButton("Get a new test address", () => { history.replaceState(null, "", "#email-test"); startMailTest(); }));
+  $("mt-sheet").replaceChildren(box);
+}
+
+function renderMailReport(r, t) {
+  const sheet = $("mt-sheet");
+  sheet.replaceChildren();
+  const status = r.score >= 9 ? "pass" : r.score >= 5 ? "warn" : "fail";
+  const head = el("div", "px-6 pb-6 pt-8 sm:px-10");
+  add(head,
+    add(el("div", "flex flex-wrap items-baseline gap-x-4 gap-y-1"),
+      el("span", "display tabular text-5xl font-semibold text-navy", `${r.score.toFixed(1).replace(/\.0$/, "")}`),
+      el("span", "text-xl text-ink/50", "/ 10"),
+      pill(status, r.verdict)),
+    el("p", "mt-3 break-anywhere text-[15px] text-ink/80", `“${r.headers.subject || "(no subject)"}” from ${r.headers.from || "unknown sender"}`),
+    el("p", "mt-1 text-[13px] text-ink/55", `Received ${new Date(r.received_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}. This is VdigDNS’s own score: every deduction is listed below.`));
+  add(sheet, head);
+
+  // Deductions
+  const ded = section("mt-score", "What cost points", r.deductions.length ? status : "pass", r.deductions.length ? `${r.deductions.length} deduction${r.deductions.length === 1 ? "" : "s"}` : "Nothing: full marks");
+  if (r.deductions.length) {
+    const list = el("ol", "divide-y divide-rule border-y border-rule");
+    r.deductions.forEach((d) => add(list, add(el("li", "grid grid-cols-[3.25rem_minmax(0,1fr)] gap-3 py-2.5 text-[14px]"),
+      el("span", "tabular font-mono font-semibold text-fail", `−${d.points}`),
+      add(el("p", "min-w-0 break-anywhere"), el("span", "font-semibold text-navy", `${d.area}. `), el("span", "", d.text)))));
+    add(ded.body, list);
+  }
+  add(sheet, fullRow(ded.wrap));
+
+  // Authentication
+  const dk = r.dkim || [];
+  const dkimPass = dk.some((k) => k.result === "pass");
+  const authStatus = worstStatus(MT_STATUS(r.spf.result), dk.length ? (dkimPass ? "pass" : "fail") : "warn", r.dmarc.result === "pass" ? "pass" : r.dmarc.result === "none" ? "warn" : "fail");
+  const weak = [r.spf.result !== "pass" ? `SPF ${r.spf.result}` : null, !dk.length ? "not DKIM-signed" : !dkimPass ? "DKIM failed" : null].filter(Boolean);
+  const authVerdict = r.dmarc.result === "pass"
+    ? (weak.length ? `DMARC passes, but ${listFormat(weak)}` : "SPF, DKIM and DMARC all pass")
+    : r.dmarc.result === "none" ? "No DMARC record for the From domain" : "DMARC fails: nothing proves the From domain";
+  const auth = section("mt-auth", "Authentication", authStatus, authVerdict);
+  const spfVal = add(el("div", ""), pill(MT_STATUS(r.spf.result), r.spf.result), el("p", "mt-0.5 text-ink/70", `${SPF_WORDS[r.spf.result] || ""} Checked for ${r.spf.domain || "the sender"}${r.sending_ip ? ` from ${r.sending_ip}` : ""}.`));
+  const dkimVal = dk.length ? add(el("div", "space-y-1"), ...dk.map((k) => add(el("div", ""), pill(k.result === "pass" ? "pass" : "fail", k.result),
+      el("span", "ml-2 font-mono text-[13px]", `d=${k.domain} s=${k.selector}`), k.error ? el("p", "text-[12px] text-ink/55", k.error) : null)))
+    : add(el("div", ""), pill("warn", "none"), el("p", "mt-0.5 text-ink/70", "The email isn’t signed."));
+  const how = [r.dmarc.dkim_aligned ? "DKIM" : null, r.dmarc.spf_aligned ? "SPF" : null].filter(Boolean);
+  const dmarcVal = add(el("div", ""), pill(r.dmarc.result === "pass" ? "pass" : r.dmarc.result === "none" ? "warn" : "fail", r.dmarc.result),
+    el("p", "mt-0.5 text-ink/70", r.dmarc.result === "none" ? `${r.from_domain} has no DMARC record.`
+      : `${how.length ? `Aligned through ${listFormat(how)}.` : "Neither SPF nor DKIM lines up with the From domain."}${r.dmarc.policy ? ` Policy: p=${r.dmarc.policy}.` : ""}`));
+  add(auth.body, add(el("div", ""), row("SPF", spfVal), row("DKIM", dkimVal), row("DMARC", dmarcVal)));
+  add(sheet, fullRow(auth.wrap));
+
+  // Sending server
+  const rd = r.reverse_dns || {};
+  const listedIps = (r.blocklists?.ips || []).flatMap((e) => e.lists.filter((l) => l.state === "listed"));
+  const srv = section("mt-server", "Sending server", !r.sending_ip ? "info" : listedIps.length || !rd.ptr?.length ? "warn" : "pass",
+    r.sending_ip ? `${r.sending_ip}${rd.ptr?.[0] ? `, ${rd.ptr[0]}` : ""}` : "Couldn’t find the sending server in the headers");
+  if (r.sending_ip) {
+    add(srv.body, add(el("div", ""),
+      row("IP address", r.sending_ip, true),
+      r.helo ? row("Introduced itself as", r.helo, true) : null,
+      row("Reverse DNS", rd.ptr?.length ? `${rd.ptr[0]} (${rd.forward_confirmed ? "points back to the IP" : "doesn’t point back to the IP"})` : "None")));
+    if (r.blocklists?.ips?.[0]) add(srv.body, add(el("div", "space-y-2"), subheading("Blocklists"), listChips(r.blocklists.ips[0].lists)));
+  }
+  add(sheet, fullRow(srv.wrap));
+
+  // SpamAssassin
+  const sa = r.spamassassin || {};
+  const spam = section("mt-spam", "Spam filter", !sa.available ? "info" : sa.score >= 5 ? "fail" : sa.score > 0 ? "warn" : "pass",
+    !sa.available ? "SpamAssassin score unavailable" : `SpamAssassin score ${sa.score} (5 or more is usually spam)`);
+  if (!sa.available) add(spam.body, el("p", "text-ink/70", sa.error || "Postmark’s free SpamAssassin service didn’t answer. The rest of the report is unaffected."));
+  else if (sa.rules?.length) {
+    const tbl = el("div", "divide-y divide-rule border-y border-rule");
+    sa.rules.filter((x) => x.score !== 0).slice(0, 25).forEach((x) => add(tbl, add(el("div", "grid grid-cols-[3.5rem_minmax(0,1fr)] gap-3 py-2 text-[14px]"),
+      el("span", `tabular font-mono ${x.score > 0 ? "text-fail" : "text-pass"}`, `${x.score > 0 ? "+" : ""}${x.score}`), el("span", "break-anywhere", x.description))));
+    add(spam.body, el("p", "text-[13px] text-ink/60", "Each rule SpamAssassin matched. Plus points push towards spam, minus points away from it."), tbl);
+  }
+  add(sheet, fullRow(spam.wrap));
+
+  // Content
+  const c = r.content || {};
+  const contentIssues = (c.has_html && !c.has_text) || c.shorteners?.length || (r.link_blocklists || []).some((x) => x.listed.length);
+  const cont = section("mt-content", "Content", contentIssues ? "warn" : "pass", `${c.links} link${c.links === 1 ? "" : "s"}, ${c.images} image${c.images === 1 ? "" : "s"}${c.attachments?.length ? `, ${c.attachments.length} attachment${c.attachments.length === 1 ? "" : "s"}` : ""}`);
+  add(cont.body, add(el("div", ""),
+    row("Versions", [c.has_html ? "HTML" : null, c.has_text ? "plain text" : null].filter(Boolean).join(" and ") || "None found"),
+    row("Visible text", `${c.text_chars} characters`),
+    c.link_domains?.length ? row("Links go to", c.link_domains.join(", "), true) : null,
+    c.shorteners?.length ? row("Link shorteners", c.shorteners.join(", "), true) : null,
+    ...(r.link_blocklists || []).filter((x) => x.listed.length).map((x) => row("Blocklisted link", `${x.domain}: ${x.listed.join(", ")}`, true)),
+    c.attachments?.length ? row("Attachments", c.attachments.map((a) => `${a.name || "unnamed"} (${a.type})`).join(", ")) : null,
+    row("Unsubscribe header", r.headers.list_unsubscribe ? (r.headers.one_click_unsubscribe ? "Yes, with one-click" : "Yes") : "No (needed for newsletters and bulk mail)"),
+    row("Size", `${Math.round(r.size / 1024)} KB${r.truncated ? " (only the first part was kept)" : ""}`)));
+  add(sheet, fullRow(cont.wrap));
+
+  // Headers
+  const hd = section("mt-headers", "Headers", "info", "The fields that matter");
+  add(hd.body, add(el("div", ""),
+    row("From", r.headers.from || "Missing"), r.headers.reply_to ? row("Reply-To", r.headers.reply_to) : null,
+    row("Envelope sender", r.envelope_from || "—", true), row("Message-ID", r.headers.message_id || "Missing", true),
+    row("Date", r.headers.date || "Missing"), r.headers.mailer ? row("Sent with", r.headers.mailer) : null),
+    actionButton("Open all headers in the header analyzer", () => {
+      $("hdr-input").value = r.raw_headers || "";
+      history.pushState(null, "", VIEWS.headers); showView("headers"); window.scrollTo(0, 0); runHeaderAnalysis();
+    }));
+  add(sheet, fullRow(hd.wrap));
+  add(sheet, add(el("div", "flex flex-wrap items-center gap-3 border-t border-rule px-6 py-5 sm:px-10"),
+    actionButton("Test another email", () => { history.replaceState(null, "", "#email-test"); startMailTest(); }),
+    el("span", "text-[13px] text-ink/60", `This report is deleted in about ${Math.max(1, Math.round((t.expires_in || 0) / 60))} minutes.`)));
+}
+
+/* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer" };
+const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test" };
 function showView(name) {
-  ["report", "prop", "spf", "dmarc", "headers"].forEach((v) => {
+  ["report", "prop", "spf", "dmarc", "headers", "mailtest"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -2842,7 +3066,8 @@ function showView(name) {
   if (name === "spf") updateSpf();
 }
 function viewFromHash() {
-  return Object.keys(VIEWS).find((k) => VIEWS[k] && VIEWS[k] === location.hash) || "report";
+  // #email-test=<id> resumes a running email test
+  return Object.keys(VIEWS).find((k) => VIEWS[k] && (VIEWS[k] === location.hash || location.hash.startsWith(`${VIEWS[k]}=`))) || "report";
 }
 window.addEventListener("hashchange", () => { showView(viewFromHash()); window.scrollTo(0, 0); });
 document.querySelectorAll("[data-nav]").forEach((a) => a.addEventListener("click", (e) => {
@@ -3053,7 +3278,7 @@ function partialFacts(data) {
 
 /** Report skeleton with one slot per section; slots are filled one by one as results arrive. */
 const SLOTS = [
-  ["website", (d) => renderWebsite(d.website)], ["registration", (d) => renderRegistration(d.registration)],
+  ["website", (d) => renderWebsite(d.website, d.domain)], ["registration", (d) => renderRegistration(d.registration)],
   ["dns", (d) => renderDNS(d.dns)], ["nameservers", (d) => renderNameservers(d.nameservers)],
   ["spf", (d) => renderSPF(d.spf, d.domain)], ["dmarc", (d) => renderDMARC(d.dmarc, d.domain)],
   ["dkim", (d) => renderDKIM(d.dkim, d.domain)], ["mail", (d) => renderMail(d.mail, d.providers)],
@@ -3214,6 +3439,13 @@ $("dmarc-form").addEventListener("input", updateDmarc);
 $("dmarc-form").addEventListener("submit", (e) => e.preventDefault());
 $("dmarc-copy").addEventListener("click", () => copyText($("dmarc-output").textContent, $("dmarc-copy"), $("dmarc-output")));
 
+$("mt-start").addEventListener("click", startMailTest);
+function resumeMailTestFromHash() {
+  const m = location.hash.match(/^#email-test=([a-z0-9]{8,24})$/);
+  if (m) followMailTest(m[1]);
+}
+window.addEventListener("hashchange", resumeMailTestFromHash);
+resumeMailTestFromHash();
 $("hdr-form").addEventListener("submit", (e) => { e.preventDefault(); runHeaderAnalysis(); });
 $("hdr-sample").addEventListener("click", () => { $("hdr-input").value = SAMPLE_HEADERS; runHeaderAnalysis(); });
 $("hdr-sample-bounce").addEventListener("click", () => { $("hdr-input").value = SAMPLE_BOUNCE; runHeaderAnalysis(); });

@@ -157,7 +157,7 @@ const store = {
   set(k, v, keep) { try { (keep ? localStorage : sessionStorage).setItem(k, v); } catch { /* storage blocked */ } },
   del(k) { try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch { /* fine */ } },
 };
-const TOOL = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist check" };
+const TOOL = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist check", mailtest: "Email test" };
 const REGION = (() => { try { return new Intl.DisplayNames(undefined, { type: "region" }); } catch { return null; } })();
 const countryName = (c) => { try { return c ? REGION?.of(c) || c : ""; } catch { return c || ""; } };
 const place = (e) => [e.city, countryName(e.country)].filter(Boolean).join(", ");
