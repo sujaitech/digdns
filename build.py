@@ -82,7 +82,7 @@ def build_css() -> None:
         raise SystemExit("build: couldn't compile the CSS; not deploying.")
     css = OUT.read_text(encoding="utf-8")
     # A few classes the page can't work without: if they're missing, something went wrong.
-    for needle in (".bg-navy", ".text-sky", ".hidden", "@container", ".lg\\:col-span-7"):
+    for needle in (".bg-band", ".bg-surface", ".text-sky", ".hidden", "@container", ".lg\\:col-span-7"):
         if needle not in css:
             raise SystemExit(f"build: compiled CSS is missing {needle!r}; not deploying.")
     print(f"build: wrote public/app.css ({len(css) // 1024} KB)", flush=True)
