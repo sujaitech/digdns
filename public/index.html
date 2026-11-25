@@ -477,11 +477,11 @@
           <h2 id="world-title" class="text-[17px] font-semibold text-navy">12 places to look from</h2>
           <p id="world-legend" class="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink/70"></p>
         </div>
-        <p id="world-summary" class="mt-1.5 max-w-3xl text-[14px] text-ink/75" aria-live="polite">Enter a domain above. You’ll first see which server each country is sent to (instant and free), then you can open the site from any place.</p>
+        <p id="world-summary" class="mt-1.5 max-w-3xl text-[14px] text-ink/75" aria-live="polite">Enter a domain above. Every place is checked at once (does the home page answer, how fast, which server), then you can open the site in a real browser from any place to see it.</p>
       </div>
       <div id="world-map" class="relative mx-auto max-w-5xl px-2 sm:px-6" aria-hidden="true"></div>
       <div id="world-grid" class="grid border-t border-rule sm:grid-cols-2 lg:grid-cols-3"></div>
-      <p class="border-t border-rule px-6 py-5 text-[13px] leading-snug text-ink/60 sm:px-10">Each place is a browser that reaches the internet through an address in that country (Browserless’s proxies), shown with a well-known city there; the exact city can vary. Views are kept for 6 hours, so opening one someone already loaded is instant. Loading new places is limited each day because every page load is paid for by the megabyte.</p>
+      <p class="border-t border-rule px-6 py-5 text-[13px] leading-snug text-ink/60 sm:px-10">The coloured marks come from one request to the home page from a test machine in each country (Globalping), refreshed every 10 minutes. An answer of HTTP 200 means the server responded, not that the page looks right: open a place to see it. Opening a place uses a real browser that reaches the internet through an address in that country (Browserless’s proxies); the exact city can vary. Opened views are kept for 6 hours, and new ones are limited each day because every page load is paid for by the megabyte.</p>
     </article>
     <dialog id="world-dialog" class="w-[min(1100px,94vw)] rounded-lg border border-rule bg-white p-0 backdrop:bg-navy/60">
       <div class="flex items-center justify-between gap-4 border-b border-rule px-4 py-2.5">
@@ -558,7 +558,7 @@
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. Website screenshots, including World view’s visits from other countries, are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
+    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. World view’s status checks run on Globalping’s free test machines, and its visits from other countries, like website screenshots, are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
   </footer>
 
 <script>
@@ -3150,13 +3150,13 @@ const WORLD_LOCATIONS = [
   { id: "jp", city: "Tokyo", country: "JP", lat: 35.68, lon: 139.69 }, { id: "au", city: "Sydney", country: "AU", lat: -33.87, lon: 151.21 },
 ];
 const WORLD_LAND_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json";
-const MAP = { w: 1000, h: 440, top: 80, bottom: -58 };   // equirectangular, Antarctica cropped
+const MAP = { w: 1000, h: 450, top: 84, bottom: -58 };   // equirectangular, Antarctica cropped
 const mapX = (lon) => ((lon + 180) / 360) * MAP.w;
 const mapY = (lat) => ((MAP.top - lat) / (MAP.top - MAP.bottom)) * MAP.h;
 const SVGNS = "http://www.w3.org/2000/svg";
 const svgEl = (tag, attrs = {}) => { const n = document.createElementNS(SVGNS, tag); Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v)); return n; };
 
-const world = { enabled: true, domain: null, dns: {}, views: {}, busy: {}, pins: {}, cards: {}, run: 0, started: false };
+const world = { enabled: true, domain: null, dns: {}, status: {}, views: {}, busy: {}, pins: {}, cards: {}, run: 0, started: false };
 
 /** TopoJSON (world-atlas) land outline -> one SVG path. Arcs are delta-encoded on a quantised grid. */
 function topoLandPath(topo) {
@@ -3166,11 +3166,16 @@ function topoLandPath(topo) {
   const polys = [];
   topo.objects.land.geometries.forEach((g) => (g.type === "Polygon" ? [g.arcs] : g.arcs).forEach((p) => polys.push(p)));
   let d = "";
+  const pt = ([lon, lat]) => `${mapX(lon).toFixed(1)},${mapY(Math.max(MAP.bottom, Math.min(MAP.top, lat))).toFixed(1)}`;
   polys.forEach((p) => p.forEach((r) => {
     const pts = ring(r);
-    // drop rings that cross the antimeridian badly (Russia's far east wraps; the gap isn't visible at this size)
-    pts.forEach(([lon, lat], i) => { d += `${i ? "L" : "M"}${mapX(lon).toFixed(1)},${mapY(Math.max(MAP.bottom, Math.min(MAP.top, lat))).toFixed(1)}`; });
-    d += "Z";
+    if (pts.every(([, lat]) => lat < -55)) return;   // Antarctica: below the map's bottom edge
+    // A ring that crosses the 180° line (Russia's far east, Fiji) would draw a line straight across the
+    // map. Cut it there into pieces, each closed along the map's left or right edge.
+    const pieces = [[]];
+    pts.forEach((q, i) => { if (i && Math.abs(q[0] - pts[i - 1][0]) > 180) pieces.push([]); pieces[pieces.length - 1].push(q); });
+    if (pieces.length > 1) pieces[0] = pieces.pop().concat(pieces[0]);   // the ring's start and end are one piece
+    pieces.forEach((piece) => { d += "M" + piece.map(pt).join("L") + "Z"; });
   }));
   return d;
 }
@@ -3201,12 +3206,12 @@ function drawWorldMap() {
   fetch(WORLD_LAND_URL).then((r) => (r.ok ? r.json() : Promise.reject())).then((topo) => land.setAttribute("d", topoLandPath(topo))).catch(() => { /* the grid alone still places the pins */ });
 }
 
-const WORLD_PIN_CLASS = { idle: "fill-ink/35", loading: "fill-sky animate-pulse", pass: "fill-pass", warn: "fill-warn", fail: "fill-fail" };
+const WORLD_PIN_CLASS = { idle: "fill-ink/35", loading: "fill-sky animate-pulse", pass: "fill-pass", warn: "fill-warn", fail: "fill-fail", error: "fill-ink/60" };
 function setPin(id, state) {
   const dot = world.pins[id]?.querySelector(".world-dot");
   if (!dot) return;
   Object.values(WORLD_PIN_CLASS).join(" ").split(" ").forEach((c) => dot.classList.remove(c));
-  WORLD_PIN_CLASS[state].split(" ").forEach((c) => dot.classList.add(c));
+  (WORLD_PIN_CLASS[state] || WORLD_PIN_CLASS.idle).split(" ").forEach((c) => dot.classList.add(c));
 }
 
 function worldCard(loc) {
@@ -3215,9 +3220,10 @@ function worldCard(loc) {
   const head = add(el("div", "flex items-baseline justify-between gap-3"),
     add(el("h3", "text-[15px] font-semibold text-navy"), document.createTextNode(loc.city), el("span", "ml-1.5 text-[13px] font-normal text-ink/55", COUNTRY_NAME(loc.country))),
     el("span", "world-verdict"));
+  const status = el("p", "world-status min-w-0 text-[13px] leading-snug text-ink/60", world.domain ? "Checking whether it answers from here…" : "");
   const dns = el("p", "world-dns min-w-0 break-anywhere text-[13px] leading-snug text-ink/60", world.domain ? "Asking a resolver there…" : "");
   const body = el("div", "world-body min-w-0");
-  add(card, head, dns, body);
+  add(card, head, status, dns, body);
   world.cards[loc.id] = card;
   renderWorldBody(loc);
   return card;
@@ -3228,6 +3234,8 @@ function renderWorldBody(loc) {
   if (!card) return;
   const body = card.querySelector(".world-body"), verdict = card.querySelector(".world-verdict");
   const v = world.views[loc.id];
+  const quick = world.status[loc.id];
+  const quickState = quick && ["pass", "warn", "fail"].includes(quick.state) ? quick.state : null;
   verdict.replaceChildren();
   if (world.busy[loc.id]) {
     body.replaceChildren(add(el("div", "grid aspect-[16/10] place-items-center rounded-md border border-dashed border-rule bg-canvas/60 p-4 text-center text-[13px] text-ink/60"),
@@ -3236,13 +3244,15 @@ function renderWorldBody(loc) {
     return;
   }
   if (v?.error) {
-    body.replaceChildren(el("p", "text-[13px] text-fail", v.error), world.domain ? actionButton("Try again", () => loadWorldView(loc)) : null);
-    setPin(loc.id, "idle");
+    body.replaceChildren(...[el("p", "text-[13px] text-fail", v.error), world.domain ? actionButton("Try again", () => loadWorldView(loc)) : null].filter(Boolean));
+    if (quickState) verdict.append(pill(quickState));
+    setPin(loc.id, quickState || "idle");
     return;
   }
   if (v) {
-    verdict.append(pill(v.verdict));
-    setPin(loc.id, v.verdict);
+    const shown = v.verdict === "error" ? quickState || "error" : v.verdict;
+    verdict.append(pill(shown));
+    setPin(loc.id, shown);
     const fig = el("button", "group block w-full overflow-hidden rounded-md border border-rule bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
     fig.type = "button";
     if (v.image) {
@@ -3261,10 +3271,11 @@ function renderWorldBody(loc) {
       ...(v.notes || []).map((n) => el("p", "mt-1 text-ink/70", n)),
       el("p", "mt-1 text-ink/50", [v.status ? `HTTP ${v.status}` : null, v.lang ? `language ${v.lang}` : null,
         v.exit_country ? `via ${COUNTRY_NAME(v.exit_country)}${v.exit_network ? ` (${v.exit_network})` : ""}` : null].filter(Boolean).join(" · ")));
-    body.replaceChildren(fig, facts);
+    body.replaceChildren(...[v.image ? fig : null, facts, v.verdict === "error" ? add(el("div", "mt-2"), actionButton("Try again", () => loadWorldView(loc))) : null].filter(Boolean));
     return;
   }
-  setPin(loc.id, "idle");
+  if (quickState) verdict.append(pill(quickState));
+  setPin(loc.id, quickState || "idle");
   const btn = actionButton(world.enabled ? `Open from ${loc.city}` : "Not set up on this server", () => loadWorldView(loc));
   btn.disabled = !world.domain || !world.enabled;
   btn.classList.add("disabled:cursor-not-allowed", "disabled:opacity-50");
@@ -3286,6 +3297,23 @@ function renderWorldDns(data) {
     : "Every country is sent to the same server address. Open any place to see the page as it loads there.";
 }
 
+function renderWorldStatus(data) {
+  (data.rows || []).forEach((r) => { world.status[r.id] = r; });
+  WORLD_LOCATIONS.forEach((loc) => {
+    const p = world.cards[loc.id]?.querySelector(".world-status");
+    const r = world.status[loc.id];
+    if (!p) return;
+    if (!r) { p.textContent = data.problem || "Couldn’t check from here."; return; }
+    const from = r.probe_city ? ` · from ${r.probe_city}${r.probe_network ? ` (${r.probe_network})` : ""}` : "";
+    p.className = `world-status min-w-0 text-[13px] leading-snug ${["pass", "warn", "fail"].includes(r.state) ? st(r.state).text : "text-ink/60"}`;
+    p.replaceChildren(el("span", "font-medium", r.summary), el("span", "text-ink/50", from));
+    if (r.detail) p.title = r.detail;
+    renderWorldBody(loc);
+  });
+  updateWorldTitle();
+  if (data.problem) { $("world-error").textContent = data.problem; $("world-error").classList.remove("hidden"); }
+}
+
 async function loadWorldView(loc) {
   const domain = world.domain, mine = world.run;
   if (!domain || world.busy[loc.id]) return;
@@ -3304,8 +3332,14 @@ async function loadWorldView(loc) {
 }
 
 function updateWorldTitle() {
-  const done = Object.values(world.views).filter((v) => v && !v.error);
-  $("world-title").textContent = world.domain ? `${world.domain}: ${done.length} of ${WORLD_LOCATIONS.length} places opened` : `${WORLD_LOCATIONS.length} places to look from`;
+  if (!world.domain) { $("world-title").textContent = `${WORLD_LOCATIONS.length} places to look from`; return; }
+  const rows = Object.values(world.status);
+  const tested = rows.filter((r) => ["pass", "warn", "fail"].includes(r.state));
+  const ok = tested.filter((r) => r.state === "pass").length;
+  const opened = Object.values(world.views).filter((v) => v && !v.error).length;
+  $("world-title").textContent = tested.length
+    ? `${world.domain} answers normally from ${ok} of ${tested.length} places` + (opened ? ` · ${opened} opened` : "")
+    : `${world.domain}: checking ${WORLD_LOCATIONS.length} places…`;
 }
 
 async function runWorld(domain) {
@@ -3313,12 +3347,23 @@ async function runWorld(domain) {
   if (!domain) return;
   $("world-domain").value = domain;
   history.replaceState(null, "", `#world=${encodeURIComponent(domain)}`);
-  world.run++; world.domain = domain; world.views = {}; world.busy = {};
+  world.run++; world.domain = domain; world.views = {}; world.busy = {}; world.status = {};
   $("world-error").classList.add("hidden");
   $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
   updateWorldTitle();
   $("world-summary").textContent = "Asking a DNS resolver in each country which server it sends visitors to…";
   const mine = world.run;
+  fetch(`${API_BASE}/api/v1/geoview/status?domain=${encodeURIComponent(domain)}`)
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (mine !== world.run) return;
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Status check failed (HTTP ${res.status}).`);
+      renderWorldStatus(data);
+    })
+    .catch((err) => {
+      if (mine !== world.run) return;
+      renderWorldStatus({ rows: [], problem: err instanceof TypeError ? "Couldn't reach the VdigDNS service." : err.message });
+    });
   try {
     const res = await fetch(`${API_BASE}/api/v1/geoview/dns?domain=${encodeURIComponent(domain)}`);
     const data = await res.json().catch(() => ({}));
@@ -3336,7 +3381,7 @@ function initWorld() {
   if (world.started) return;
   world.started = true;
   drawWorldMap();
-  $("world-legend").replaceChildren(...[["pass", "Loads"], ["warn", "Slow or error page"], ["fail", "Blocked or down"]].map(([s, w]) => pill(s, w)));
+  $("world-legend").replaceChildren(...[["pass", "Answers normally"], ["warn", "Slow, refused or error page"], ["fail", "Down or blocked"]].map(([s, w]) => pill(s, w)));
   $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
   fetch(`${API_BASE}/api/v1/geoview/locations`).then((r) => (r.ok ? r.json() : null)).then((d) => {
     if (d && d.enabled === false) { world.enabled = false; WORLD_LOCATIONS.forEach(renderWorldBody); }
@@ -3346,6 +3391,7 @@ function initWorld() {
     $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
     renderWorldDns(SAMPLE_WORLD.dns);
     Object.assign(world.views, SAMPLE_WORLD.views);
+    renderWorldStatus(SAMPLE_WORLD.status);
     WORLD_LOCATIONS.forEach(renderWorldBody); updateWorldTitle();
   }
 }
@@ -3731,6 +3777,19 @@ const SAMPLE_WORLD = (() => {
     `<rect x="96" y="430" width="260" height="64" rx="8" fill="${bar}"/><rect x="96" y="560" width="1088" height="180" rx="12" fill="#eef0f4"/></svg>`);
   const v = (id, extra) => ({ location: { id }, verdict: "pass", exit_country: id.toUpperCase(), in_country: true, notes: [], redirects: 0, lang: "en", ...extra });
   return {
+    status: { rows: [
+      { id: "us", state: "pass", summary: "HTTP 200 in 0.4 s", probe_city: "Ashburn", probe_network: "Amazon" },
+      { id: "ca", state: "pass", summary: "HTTP 200 in 0.5 s", probe_city: "Vancouver", probe_network: "OVH" },
+      { id: "br", state: "pass", summary: "HTTP 200 in 0.9 s", probe_city: "São Paulo", probe_network: "Vultr" },
+      { id: "gb", state: "pass", summary: "HTTP 200 in 0.3 s", probe_city: "London", probe_network: "M247" },
+      { id: "de", state: "pass", summary: "Redirects (HTTP 302) to northwind.example.de in 0.2 s", probe_city: "Frankfurt", probe_network: "Hetzner" },
+      { id: "es", state: "pass", summary: "HTTP 200 in 0.4 s", probe_city: "Madrid", probe_network: "DigitalOcean" },
+      { id: "ae", state: "warn", summary: "Refused (HTTP 403). Could be blocking by country or bot protection.", probe_city: "Dubai", probe_network: "Etisalat" },
+      { id: "za", state: "fail", summary: "No answer: timed out.", probe_city: "Johannesburg", probe_network: "Afrihost" },
+      { id: "in", state: "warn", summary: "HTTP 200 in 3.8 s (slow)", probe_city: "Mumbai", probe_network: "Airtel" },
+      { id: "sg", state: "pass", summary: "HTTP 200 in 0.6 s", probe_city: "Singapore", probe_network: "Linode" },
+      { id: "jp", state: "pass", summary: "HTTP 200 in 0.7 s", probe_city: "Osaka", probe_network: "Sakura Internet" },
+      { id: "au", state: "pass", summary: "HTTP 200 in 0.9 s", probe_city: "Sydney", probe_network: "Telstra" }] },
     dns: { varies: true, rows: [
       { id: "us", ips: ["151.101.1.140"], networks: ["Fastly"] }, { id: "ca", ips: ["151.101.1.140"], networks: ["Fastly"] },
       { id: "br", ips: ["151.101.193.140"], networks: ["Fastly"] }, { id: "gb", ips: ["151.101.65.140"], networks: ["Fastly"] },
