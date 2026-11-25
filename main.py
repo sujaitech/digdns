@@ -155,6 +155,14 @@ TOR_EXIT_LIST_URL = "https://check.torproject.org/torbulkexitlist"
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "")
 BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "https://production-sfo.browserless.io").rstrip("/")
 SCREENSHOT_PER_DAY = int(_env_float("SCREENSHOT_PER_DAY", 30))  # new screenshots per day, all visitors (~900/month)
+# Website from other countries: the same Browserless account, through its built-in proxies.
+# Proxy traffic is billed per MB (datacenter 2 units/MB, residential 6), so every location is loaded
+# only when a visitor asks for it, results are cached for 6 hours, and there's a daily cap.
+# A typical home page is 2-5 MB, so one location costs roughly 5-12 units on datacenter, 15-30 on residential.
+# The free plan's 1,000 units a month (shared with the report screenshots) covers only a few dozen loads.
+GEO_PROXY = os.getenv("GEO_PROXY", "datacenter").strip().lower()    # "datacenter" (cheaper) or "residential" (more countries)
+GEO_PER_DAY = int(_env_float("GEO_PER_DAY", 2))                      # NEW location loads per day, all visitors (cached ones are free)
+GEO_PER_VISITOR_DAY = 6
 
 
 # =============================================================================
@@ -3303,13 +3311,183 @@ async def screenshot(domain: str = Query(..., min_length=1, max_length=300)) -> 
 
 
 
+# ---- Website from around the world (GeoPeeker-style) -------------------------------------------
+# Browserless can't place a browser in a chosen city on its smaller plans, only in a country (its
+# proxies pick an address somewhere in that country). So each place is labelled with a well-known
+# city, and the result says which country the visit really came from.
+GEO_LOCATIONS: list[dict[str, Any]] = [
+    {"id": "us", "city": "New York", "country": "US", "lat": 40.71, "lon": -74.01},
+    {"id": "ca", "city": "Vancouver", "country": "CA", "lat": 49.28, "lon": -123.12},
+    {"id": "br", "city": "São Paulo", "country": "BR", "lat": -23.55, "lon": -46.63},
+    {"id": "gb", "city": "London", "country": "GB", "lat": 51.51, "lon": -0.13},
+    {"id": "de", "city": "Frankfurt", "country": "DE", "lat": 50.11, "lon": 8.68},
+    {"id": "es", "city": "Madrid", "country": "ES", "lat": 40.42, "lon": -3.70},
+    {"id": "ae", "city": "Dubai", "country": "AE", "lat": 25.20, "lon": 55.27},
+    {"id": "za", "city": "Johannesburg", "country": "ZA", "lat": -26.20, "lon": 28.05},
+    {"id": "in", "city": "Mumbai", "country": "IN", "lat": 19.08, "lon": 72.88},
+    {"id": "sg", "city": "Singapore", "country": "SG", "lat": 1.35, "lon": 103.82},
+    {"id": "jp", "city": "Tokyo", "country": "JP", "lat": 35.68, "lon": 139.69},
+    {"id": "au", "city": "Sydney", "country": "AU", "lat": -33.87, "lon": 151.21},
+]
+GEO_BY_ID = {g["id"]: g for g in GEO_LOCATIONS}
+
+# Runs inside Browserless's browser. Learns its own public IP first (so we can confirm the country),
+# then opens the site, skipping video and audio to keep proxy traffic down.
+GEO_FUNCTION = r"""
+export default async ({ page, context }) => {
+  const out = { exit_ip: null, status: null, final_url: null, title: null, lang: null, load_ms: null,
+                redirects: 0, timed_out: false, error: null, shot: null };
+  try {
+    await page.goto("https://api.ipify.org?format=json", { timeout: 15000 });
+    out.exit_ip = JSON.parse(await page.evaluate(() => document.body.innerText)).ip;
+  } catch (e) { out.error = "ip: " + String(e).slice(0, 120); }
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setRequestInterception(true);
+  page.on("request", (r) => (r.resourceType() === "media" ? r.abort() : r.continue()));
+  const started = Date.now();
+  try {
+    const res = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 30000 });
+    if (res) { out.status = res.status(); out.redirects = res.request().redirectChain().length; }
+  } catch (e) {
+    out.timed_out = /timeout/i.test(String(e));
+    if (!out.timed_out) out.error = String(e).slice(0, 200);
+  }
+  out.load_ms = Date.now() - started;
+  try {
+    out.final_url = page.url();
+    out.title = (await page.title()).slice(0, 200);
+    out.lang = await page.evaluate(() => document.documentElement.lang || null);
+    out.shot = await page.screenshot({ type: "jpeg", quality: 60, encoding: "base64" });
+  } catch (e) { out.error = out.error || String(e).slice(0, 200); }
+  return out;
+};
+"""
+
+
+def _browserless_geo(url: str, country: str) -> tuple[int, dict | bytes]:
+    params = urllib.parse.urlencode({"token": BROWSERLESS_TOKEN, "proxy": GEO_PROXY, "proxyCountry": country.lower(),
+                                     "proxySticky": "true", "timeout": 55000})
+    body = json.dumps({"code": GEO_FUNCTION, "context": {"url": url}}).encode()
+    req = urllib.request.Request(f"{BROWSERLESS_URL}/function?{params}", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=58) as res:  # noqa: S310 - fixed https URL from config
+            return res.status, json.loads(res.read(8_000_000))
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(2000)
+
+
+def geo_summary(loc: dict, raw: dict, exit_owner: dict | None, requested_host: str) -> dict:
+    """Turn what the remote browser saw into a verdict for one location."""
+    exit_country = (exit_owner or {}).get("country")
+    final_host = urllib.parse.urlsplit(raw.get("final_url") or "").hostname or ""
+    out = {"location": loc, "exit_ip": raw.get("exit_ip"), "exit_country": exit_country,
+           "exit_network": (exit_owner or {}).get("provider") or (exit_owner or {}).get("as_name"),
+           "in_country": None if not exit_country else exit_country.upper() == loc["country"],
+           "status": raw.get("status"), "final_url": raw.get("final_url"), "title": raw.get("title"),
+           "lang": raw.get("lang"), "load_ms": raw.get("load_ms"), "redirects": raw.get("redirects") or 0,
+           "timed_out": bool(raw.get("timed_out")),
+           "image": f"data:image/jpeg;base64,{raw['shot']}" if raw.get("shot") else None, "notes": []}
+    code = raw.get("status")
+    if raw.get("error") and not code and not raw.get("shot"):
+        out["verdict"], out["summary"] = "fail", "The site didn't load from here."
+    elif code in (403, 451):
+        out["verdict"], out["summary"] = "fail", f"Blocked from here (HTTP {code})."
+    elif code and code >= 500:
+        out["verdict"], out["summary"] = "fail", f"Server error from here (HTTP {code})."
+    elif code and code >= 400:
+        out["verdict"], out["summary"] = "warn", f"Error page from here (HTTP {code})."
+    elif out["timed_out"]:
+        out["verdict"], out["summary"] = "warn", "Still loading after 30 seconds: very slow from here."
+    else:
+        out["verdict"] = "pass"
+        out["summary"] = f"Loads in {raw['load_ms'] / 1000:.1f} s." if raw.get("load_ms") else "Loads."
+    if final_host and final_host.removeprefix("www.") != requested_host.removeprefix("www."):
+        out["notes"].append(f"Visitors here are sent to {final_host}.")
+    if out["in_country"] is False:
+        out["notes"].append(f"Browserless couldn't place a browser in {loc['country']}; this visit came from {exit_country}.")
+    return out
+
+
+@app.get("/api/v1/geoview/locations")
+async def geoview_locations(response: Response) -> dict:
+    _set_cdn_cache(response, 86400)
+    return {"locations": GEO_LOCATIONS, "enabled": bool(BROWSERLESS_TOKEN), "proxy": GEO_PROXY}
+
+
+@app.get("/api/v1/geoview/dns")
+async def geoview_dns(request: Request, response: Response, domain: str = Query(..., min_length=1, max_length=300)) -> dict:
+    """Free and quick: which server address a resolver in each location's country gives for the site."""
+    clean = _clean_domain(domain)
+    pool = await resolver_pool()
+    countries = (pool or {}).get("countries", {})
+
+    async def one(loc: dict) -> dict:
+        picks = countries.get(loc["country"], [])[:2]
+        for r in picks:
+            row = await _ask_for_row(r["org"] or r["ip"], r["ip"], loc["city"], clean, "A", True, timeout=REGIONAL_TIMEOUT)
+            if not row["error"]:
+                return {"id": loc["id"], "resolver": r["org"] or r["ip"], "ips": row["values"], "rcode": row["rcode"]}
+        return {"id": loc["id"], "resolver": None, "ips": [], "rcode": None,
+                "error": "No resolver in this country answered" if picks else "No resolver listed for this country"}
+
+    rows = await asyncio.gather(*(one(loc) for loc in GEO_LOCATIONS))
+    unique = sorted({ip for r in rows for ip in r["ips"] if is_public_ip(ip)})[:12]
+    owners = dict(zip(unique, await asyncio.gather(*(lookup_ip_owner(ip) for ip in unique))))
+    for r in rows:
+        r["networks"] = sorted({(owners.get(ip) or {}).get("provider") or (owners.get(ip) or {}).get("as_name") or "Unknown"
+                                for ip in r["ips"] if ip in owners})
+    distinct = {tuple(r["ips"]) for r in rows if r["ips"]}
+    _set_cdn_cache(response, 600)
+    return {"domain": clean, "rows": rows, "varies": len(distinct) > 1}
+
+
+@app.get("/api/v1/geoview")
+async def geoview(request: Request, response: Response, domain: str = Query(..., min_length=1, max_length=300),
+                  loc: str = Query(..., min_length=2, max_length=4)) -> dict:
+    """Load the site's home page in a real browser from one location. Cached at the edge for 6 hours."""
+    if not BROWSERLESS_TOKEN:
+        raise HTTPException(status_code=503, detail="Website views from other countries aren't set up on this server.")
+    place = GEO_BY_ID.get(loc.lower())
+    if not place:
+        raise HTTPException(status_code=400, detail="Unknown location.")
+    clean = _clean_domain(domain)
+    ips = await _ips_of(clean)
+    if not ips or not all(is_public_ip(i) for i in ips):
+        raise HTTPException(status_code=404, detail="This domain has no public website address.")
+    visitor = _visitor_ip(request) or "unknown"
+    if not await daily_counter(f"vdig:geo-visitor:{visitor}", GEO_PER_VISITOR_DAY):
+        raise HTTPException(status_code=429, detail=f"You've loaded {GEO_PER_VISITOR_DAY} locations today, the daily limit per visitor. Views others have already loaded still open.")
+    if not await daily_counter("vdig:geo", GEO_PER_DAY):
+        raise HTTPException(status_code=429, detail="Today's allowance for loading new locations is used up. It resets at midnight UTC.")
+    logged = track(request, "geoview", f"{clean} {place['id'].upper()}")
+    try:
+        code, data = await asyncio.wait_for(run_in_threadpool(_browserless_geo, f"https://{clean}/", place["country"]), 59)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The remote browser took too long. Try again, or try another location.") from exc
+    finally:
+        await tracked(logged)
+    if code != 200 or not isinstance(data, dict):
+        log.warning("Geo view failed for %s from %s: HTTP %s %s", clean, place["id"], code, str(data)[:200])
+        detail = "The screenshot service refused the request."
+        if code == 401:
+            detail = "The screenshot service says this plan can't use its proxies."
+        elif code == 429:
+            detail = "The screenshot service is busy or its monthly allowance is used up."
+        raise HTTPException(status_code=502, detail=detail)
+    exit_owner = await lookup_ip_owner(data["exit_ip"]) if data.get("exit_ip") and is_public_ip(data["exit_ip"]) else None
+    result = geo_summary(place, data, exit_owner, clean)
+    _set_cdn_cache(response, 21600 if result["verdict"] != "fail" else 600)
+    return result
+
+
 @app.get("/api/v1/health")
 async def health() -> dict:
     """Used by you (and uptime monitors) to confirm the API is alive."""
     # usage_log / admin_ready only say whether the log is set up (never any secret), so the admin page
     # can tell the owner exactly which setup step is missing.
     return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "usage_log": usage_enabled(),
-            "admin_ready": len(ADMIN_TOKEN) >= 16, "mailtest": mailtest_enabled(), "screenshots": bool(BROWSERLESS_TOKEN), "abuseipdb": bool(ABUSEIPDB_KEY),
+            "admin_ready": len(ADMIN_TOKEN) >= 16, "mailtest": mailtest_enabled(), "screenshots": bool(BROWSERLESS_TOKEN), "geoview_proxy": GEO_PROXY if BROWSERLESS_TOKEN else None, "abuseipdb": bool(ABUSEIPDB_KEY),
             "time": datetime.now(timezone.utc).isoformat()}
 
 
