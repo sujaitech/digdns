@@ -114,6 +114,7 @@
         <nav aria-label="Tools" class="-mx-4 flex w-[calc(100%+2rem)] gap-6 overflow-x-auto px-4 text-[15px] [scrollbar-width:none] sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden">
           <a href="#" data-nav="report" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
           <a href="#propagation" data-nav="prop" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
+          <a href="#world" data-nav="world" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">World view</a>
           <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
           <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Headers &amp; bounces</a>
@@ -194,6 +195,18 @@
       <div id="head-mailtest" hidden>
         <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Test a real email</h1>
         <p class="mt-3 max-w-2xl text-white/80">Get a one-time address, send it an email from the account or app you want to check, and see how it scores: authentication, the sending server’s reputation, a SpamAssassin spam score and the content.</p>
+      </div>
+
+      <!-- Header block: world view -->
+      <div id="head-world" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">See a website from around the world</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Open a site in a real browser from another country to see what people there get: the page itself, how long it takes, and whether they’re blocked or sent somewhere else.</p>
+        <form id="world-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+          <label for="world-domain" class="sr-only">Website domain</label>
+          <input id="world-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="example.com" required maxlength="253"
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+          <button id="world-btn" type="submit" class="slice">Check</button>
+        </form>
       </div>
 
       <!-- Header block: IP lookup -->
@@ -455,6 +468,30 @@
     </article>
   </main>
 
+  <!-- ================= VIEW: WORLD VIEW ================= -->
+  <main id="view-world" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <div id="world-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
+    <article class="overflow-hidden rounded-lg border border-rule bg-white">
+      <div class="px-6 pb-2 pt-7 sm:px-10">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <h2 id="world-title" class="text-[17px] font-semibold text-navy">12 places to look from</h2>
+          <p id="world-legend" class="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink/70"></p>
+        </div>
+        <p id="world-summary" class="mt-1.5 max-w-3xl text-[14px] text-ink/75" aria-live="polite">Enter a domain above. You’ll first see which server each country is sent to (instant and free), then you can open the site from any place.</p>
+      </div>
+      <div id="world-map" class="relative mx-auto max-w-5xl px-2 sm:px-6" aria-hidden="true"></div>
+      <div id="world-grid" class="grid border-t border-rule sm:grid-cols-2 lg:grid-cols-3"></div>
+      <p class="border-t border-rule px-6 py-5 text-[13px] leading-snug text-ink/60 sm:px-10">Each place is a browser that reaches the internet through an address in that country (Browserless’s proxies), shown with a well-known city there; the exact city can vary. Views are kept for 6 hours, so opening one someone already loaded is instant. Loading new places is limited each day because every page load is paid for by the megabyte.</p>
+    </article>
+    <dialog id="world-dialog" class="w-[min(1100px,94vw)] rounded-lg border border-rule bg-white p-0 backdrop:bg-navy/60">
+      <div class="flex items-center justify-between gap-4 border-b border-rule px-4 py-2.5">
+        <p id="world-dialog-title" class="min-w-0 truncate text-[14px] font-semibold text-navy"></p>
+        <button id="world-dialog-close" type="button" class="rounded-md px-2 py-1 text-[13px] font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Close</button>
+      </div>
+      <img id="world-dialog-img" alt="" class="block w-full" />
+    </dialog>
+  </main>
+
   <!-- ================= VIEW: IP LOOKUP ================= -->
   <main id="view-ip" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <article class="divide-y divide-rule overflow-hidden rounded-lg border border-rule bg-white">
@@ -521,7 +558,7 @@
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. Website screenshots are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
+    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. Website screenshots, including World view’s visits from other countries, are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
   </footer>
 
 <script>
@@ -3102,6 +3139,218 @@ function renderMailReport(r, t) {
 }
 
 /* =====================================================================
+   WORLD VIEW: the site from 12 places (GeoPeeker-style)
+   ===================================================================== */
+const WORLD_LOCATIONS = [
+  { id: "us", city: "New York", country: "US", lat: 40.71, lon: -74.01 }, { id: "ca", city: "Vancouver", country: "CA", lat: 49.28, lon: -123.12 },
+  { id: "br", city: "São Paulo", country: "BR", lat: -23.55, lon: -46.63 }, { id: "gb", city: "London", country: "GB", lat: 51.51, lon: -0.13 },
+  { id: "de", city: "Frankfurt", country: "DE", lat: 50.11, lon: 8.68 }, { id: "es", city: "Madrid", country: "ES", lat: 40.42, lon: -3.7 },
+  { id: "ae", city: "Dubai", country: "AE", lat: 25.2, lon: 55.27 }, { id: "za", city: "Johannesburg", country: "ZA", lat: -26.2, lon: 28.05 },
+  { id: "in", city: "Mumbai", country: "IN", lat: 19.08, lon: 72.88 }, { id: "sg", city: "Singapore", country: "SG", lat: 1.35, lon: 103.82 },
+  { id: "jp", city: "Tokyo", country: "JP", lat: 35.68, lon: 139.69 }, { id: "au", city: "Sydney", country: "AU", lat: -33.87, lon: 151.21 },
+];
+const WORLD_LAND_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json";
+const MAP = { w: 1000, h: 440, top: 80, bottom: -58 };   // equirectangular, Antarctica cropped
+const mapX = (lon) => ((lon + 180) / 360) * MAP.w;
+const mapY = (lat) => ((MAP.top - lat) / (MAP.top - MAP.bottom)) * MAP.h;
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs = {}) => { const n = document.createElementNS(SVGNS, tag); Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v)); return n; };
+
+const world = { enabled: true, domain: null, dns: {}, views: {}, busy: {}, pins: {}, cards: {}, run: 0, started: false };
+
+/** TopoJSON (world-atlas) land outline -> one SVG path. Arcs are delta-encoded on a quantised grid. */
+function topoLandPath(topo) {
+  const [sx, sy] = topo.transform.scale, [tx, ty] = topo.transform.translate;
+  const arcs = topo.arcs.map((arc) => { let x = 0, y = 0; return arc.map(([dx, dy]) => { x += dx; y += dy; return [x * sx + tx, y * sy + ty]; }); });
+  const ring = (idx) => idx.flatMap((i, n) => { const a = i < 0 ? arcs[~i].slice().reverse() : arcs[i]; return n ? a.slice(1) : a; });
+  const polys = [];
+  topo.objects.land.geometries.forEach((g) => (g.type === "Polygon" ? [g.arcs] : g.arcs).forEach((p) => polys.push(p)));
+  let d = "";
+  polys.forEach((p) => p.forEach((r) => {
+    const pts = ring(r);
+    // drop rings that cross the antimeridian badly (Russia's far east wraps; the gap isn't visible at this size)
+    pts.forEach(([lon, lat], i) => { d += `${i ? "L" : "M"}${mapX(lon).toFixed(1)},${mapY(Math.max(MAP.bottom, Math.min(MAP.top, lat))).toFixed(1)}`; });
+    d += "Z";
+  }));
+  return d;
+}
+
+function drawWorldMap() {
+  const box = $("world-map");
+  const svg = svgEl("svg", { viewBox: `0 0 ${MAP.w} ${MAP.h}`, class: "block h-auto w-full" });
+  const grid = svgEl("g", { stroke: "currentColor", "stroke-width": "1", class: "text-rule", fill: "none" });
+  for (let lat = -40; lat <= 60; lat += 20) grid.append(svgEl("line", { x1: 0, x2: MAP.w, y1: mapY(lat), y2: mapY(lat), "stroke-dasharray": "2 5" }));
+  for (let lon = -150; lon <= 150; lon += 30) grid.append(svgEl("line", { y1: 0, y2: MAP.h, x1: mapX(lon), x2: mapX(lon), "stroke-dasharray": "2 5" }));
+  const land = svgEl("path", { d: "", class: "fill-[#E7E9F0]", "fill-rule": "evenodd" });
+  const pins = svgEl("g");
+  svg.append(grid, land, pins);
+  WORLD_LOCATIONS.forEach((loc) => {
+    const g = svgEl("g", { transform: `translate(${mapX(loc.lon).toFixed(1)},${mapY(loc.lat).toFixed(1)})`, class: "world-pin cursor-pointer", "data-id": loc.id });
+    const halo = svgEl("circle", { r: 10, class: "world-halo fill-sky/0" });
+    const dot = svgEl("circle", { r: 6.5, class: "world-dot fill-ink/35 stroke-white", "stroke-width": 2.5 });
+    const label = svgEl("text", { x: 11, y: 4, class: "fill-ink/70 text-[15px] font-medium" });
+    label.textContent = loc.city;
+    if (["gb", "es", "sg", "us"].includes(loc.id)) { label.setAttribute("x", -11); label.setAttribute("text-anchor", "end"); }
+    label.setAttribute("pointer-events", "none");
+    g.append(halo, dot, label);
+    g.addEventListener("click", () => { const c = world.cards[loc.id]; if (c) { c.scrollIntoView({ behavior: "smooth", block: "center" }); c.querySelector("button")?.focus({ preventScroll: true }); } });
+    pins.append(g);
+    world.pins[loc.id] = g;
+  });
+  box.replaceChildren(svg);
+  fetch(WORLD_LAND_URL).then((r) => (r.ok ? r.json() : Promise.reject())).then((topo) => land.setAttribute("d", topoLandPath(topo))).catch(() => { /* the grid alone still places the pins */ });
+}
+
+const WORLD_PIN_CLASS = { idle: "fill-ink/35", loading: "fill-sky animate-pulse", pass: "fill-pass", warn: "fill-warn", fail: "fill-fail" };
+function setPin(id, state) {
+  const dot = world.pins[id]?.querySelector(".world-dot");
+  if (!dot) return;
+  Object.values(WORLD_PIN_CLASS).join(" ").split(" ").forEach((c) => dot.classList.remove(c));
+  WORLD_PIN_CLASS[state].split(" ").forEach((c) => dot.classList.add(c));
+}
+
+function worldCard(loc) {
+  const card = el("section", "flex min-w-0 flex-col gap-3 border-b border-rule px-6 py-5 sm:border-r sm:px-7");
+  card.id = `world-${loc.id}`;
+  const head = add(el("div", "flex items-baseline justify-between gap-3"),
+    add(el("h3", "text-[15px] font-semibold text-navy"), document.createTextNode(loc.city), el("span", "ml-1.5 text-[13px] font-normal text-ink/55", COUNTRY_NAME(loc.country))),
+    el("span", "world-verdict"));
+  const dns = el("p", "world-dns min-w-0 break-anywhere text-[13px] leading-snug text-ink/60", world.domain ? "Asking a resolver there…" : "");
+  const body = el("div", "world-body min-w-0");
+  add(card, head, dns, body);
+  world.cards[loc.id] = card;
+  renderWorldBody(loc);
+  return card;
+}
+
+function renderWorldBody(loc) {
+  const card = world.cards[loc.id];
+  if (!card) return;
+  const body = card.querySelector(".world-body"), verdict = card.querySelector(".world-verdict");
+  const v = world.views[loc.id];
+  verdict.replaceChildren();
+  if (world.busy[loc.id]) {
+    body.replaceChildren(add(el("div", "grid aspect-[16/10] place-items-center rounded-md border border-dashed border-rule bg-canvas/60 p-4 text-center text-[13px] text-ink/60"),
+      el("span", "", `Opening a browser in ${COUNTRY_NAME(loc.country)}… this can take up to a minute.`)));
+    setPin(loc.id, "loading");
+    return;
+  }
+  if (v?.error) {
+    body.replaceChildren(el("p", "text-[13px] text-fail", v.error), world.domain ? actionButton("Try again", () => loadWorldView(loc)) : null);
+    setPin(loc.id, "idle");
+    return;
+  }
+  if (v) {
+    verdict.append(pill(v.verdict));
+    setPin(loc.id, v.verdict);
+    const fig = el("button", "group block w-full overflow-hidden rounded-md border border-rule bg-canvas focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+    fig.type = "button";
+    if (v.image) {
+      const img = el("img", "block aspect-[16/10] w-full object-cover object-top transition group-hover:opacity-90");
+      img.src = v.image; img.alt = `${world.domain} as seen from ${loc.city}`; img.loading = "lazy";
+      fig.append(img);
+      fig.addEventListener("click", () => {
+        $("world-dialog-img").src = v.image; $("world-dialog-img").alt = img.alt;
+        $("world-dialog-title").textContent = `${world.domain} from ${loc.city}, ${COUNTRY_NAME(loc.country)}`;
+        $("world-dialog").showModal();
+      });
+    } else fig.append(el("div", "grid aspect-[16/10] place-items-center text-[13px] text-ink/50", "No picture"));
+    const facts = add(el("div", "text-[13px]"),
+      el("p", `font-medium ${st(v.verdict).text}`, v.summary),
+      v.title ? el("p", "mt-1 truncate text-ink/75", `“${v.title}”`) : null,
+      ...(v.notes || []).map((n) => el("p", "mt-1 text-ink/70", n)),
+      el("p", "mt-1 text-ink/50", [v.status ? `HTTP ${v.status}` : null, v.lang ? `language ${v.lang}` : null,
+        v.exit_country ? `via ${COUNTRY_NAME(v.exit_country)}${v.exit_network ? ` (${v.exit_network})` : ""}` : null].filter(Boolean).join(" · ")));
+    body.replaceChildren(fig, facts);
+    return;
+  }
+  setPin(loc.id, "idle");
+  const btn = actionButton(world.enabled ? `Open from ${loc.city}` : "Not set up on this server", () => loadWorldView(loc));
+  btn.disabled = !world.domain || !world.enabled;
+  btn.classList.add("disabled:cursor-not-allowed", "disabled:opacity-50");
+  body.replaceChildren(btn);
+}
+
+function renderWorldDns(data) {
+  const byId = Object.fromEntries((data.rows || []).map((r) => [r.id, r]));
+  WORLD_LOCATIONS.forEach((loc) => {
+    const p = world.cards[loc.id]?.querySelector(".world-dns");
+    const r = byId[loc.id];
+    if (!p) return;
+    if (!r || r.error || !r.ips?.length) { p.textContent = r?.error ? `DNS: ${r.error.toLowerCase()}.` : "DNS: no address returned."; return; }
+    p.replaceChildren(document.createTextNode("Sent to "), el("span", "font-mono text-ink/80", r.ips.slice(0, 2).join(", ")),
+      document.createTextNode(r.networks?.length ? ` (${r.networks.join(", ")})` : ""));
+  });
+  $("world-summary").textContent = data.varies
+    ? "Different countries are sent to different servers, so this site uses a CDN or location-based DNS. Open a few places to compare what they get."
+    : "Every country is sent to the same server address. Open any place to see the page as it loads there.";
+}
+
+async function loadWorldView(loc) {
+  const domain = world.domain, mine = world.run;
+  if (!domain || world.busy[loc.id]) return;
+  world.busy[loc.id] = true; delete world.views[loc.id];
+  renderWorldBody(loc);
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/geoview?domain=${encodeURIComponent(domain)}&loc=${loc.id}`);
+    const data = await res.json().catch(() => ({}));
+    if (mine !== world.run) return;
+    world.views[loc.id] = res.ok ? data : { error: typeof data.detail === "string" ? data.detail : `Couldn’t load (HTTP ${res.status}).` };
+  } catch {
+    if (mine === world.run) world.views[loc.id] = { error: "Couldn't reach the VdigDNS service." };
+  } finally {
+    if (mine === world.run) { world.busy[loc.id] = false; renderWorldBody(loc); updateWorldTitle(); }
+  }
+}
+
+function updateWorldTitle() {
+  const done = Object.values(world.views).filter((v) => v && !v.error);
+  $("world-title").textContent = world.domain ? `${world.domain}: ${done.length} of ${WORLD_LOCATIONS.length} places opened` : `${WORLD_LOCATIONS.length} places to look from`;
+}
+
+async function runWorld(domain) {
+  domain = (domain || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  if (!domain) return;
+  $("world-domain").value = domain;
+  history.replaceState(null, "", `#world=${encodeURIComponent(domain)}`);
+  world.run++; world.domain = domain; world.views = {}; world.busy = {};
+  $("world-error").classList.add("hidden");
+  $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
+  updateWorldTitle();
+  $("world-summary").textContent = "Asking a DNS resolver in each country which server it sends visitors to…";
+  const mine = world.run;
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/geoview/dns?domain=${encodeURIComponent(domain)}`);
+    const data = await res.json().catch(() => ({}));
+    if (mine !== world.run) return;
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Check failed (HTTP ${res.status}).`);
+    renderWorldDns(data);
+  } catch (err) {
+    if (mine !== world.run) return;
+    $("world-error").textContent = err instanceof TypeError ? "Couldn't reach the VdigDNS service." : err.message;
+    $("world-error").classList.remove("hidden");
+  }
+}
+
+function initWorld() {
+  if (world.started) return;
+  world.started = true;
+  drawWorldMap();
+  $("world-legend").replaceChildren(...[["pass", "Loads"], ["warn", "Slow or error page"], ["fail", "Blocked or down"]].map(([s, w]) => pill(s, w)));
+  $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
+  fetch(`${API_BASE}/api/v1/geoview/locations`).then((r) => (r.ok ? r.json() : null)).then((d) => {
+    if (d && d.enabled === false) { world.enabled = false; WORLD_LOCATIONS.forEach(renderWorldBody); }
+  }).catch(() => {});
+  if (window.DIGDNS_SAMPLE) {
+    world.domain = "northwind.example"; $("world-domain").value = world.domain;
+    $("world-grid").replaceChildren(...WORLD_LOCATIONS.map(worldCard));
+    renderWorldDns(SAMPLE_WORLD.dns);
+    Object.assign(world.views, SAMPLE_WORLD.views);
+    WORLD_LOCATIONS.forEach(renderWorldBody); updateWorldTitle();
+  }
+}
+
+/* =====================================================================
    IP LOOKUP: your connection + any IP's reputation
    ===================================================================== */
 const COUNTRY_NAME = (code) => { try { return code ? new Intl.DisplayNames(["en"], { type: "region" }).of(code) : null; } catch { return code; } };
@@ -3308,9 +3557,9 @@ function stopSpeedTest() {
 /* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test", ip: "#ip", speed: "#speed-test" };
+const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test", ip: "#ip", speed: "#speed-test", world: "#world" };
 function showView(name) {
-  ["report", "prop", "spf", "dmarc", "headers", "mailtest", "ip", "speed"].forEach((v) => {
+  ["report", "prop", "spf", "dmarc", "headers", "mailtest", "ip", "speed", "world"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -3322,6 +3571,7 @@ function showView(name) {
   });
   if (name === "spf") updateSpf();
   if (name === "ip") loadMyIp();
+  if (name === "world") initWorld();
 }
 function viewFromHash() {
   // #email-test=<id> resumes a running email test; #ip=<address> opens a lookup
@@ -3471,6 +3721,33 @@ const SAMPLE_IP = { ip: "185.220.101.47", version: 4, public: true, status: "fai
   listed_on: ["Mailspike", "UCEPROTECT L1", "DroneBL"], errors: [],
   warnings: ["Tor exit node: whatever one Tor user does, every site sees it coming from this address. Reports may not be about the person you're looking at."],
   notes: ["Usage type: a server in a data centre, not a home or office connection."] };
+/* Sample world view for the design preview: drawn mock pages, not real screenshots. */
+const SAMPLE_WORLD = (() => {
+  const page = (bar, head, sub, bg = "#ffffff") => "data:image/svg+xml," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800"><rect width="1280" height="800" fill="${bg}"/>` +
+    `<rect width="1280" height="72" fill="${bar}"/><rect x="48" y="24" width="160" height="24" rx="4" fill="#ffffff" opacity=".85"/>` +
+    `<text x="96" y="300" font-family="Helvetica,Arial,sans-serif" font-size="64" font-weight="700" fill="#22232E">${head}</text>` +
+    `<text x="96" y="370" font-family="Helvetica,Arial,sans-serif" font-size="30" fill="#5b5d6b">${sub}</text>` +
+    `<rect x="96" y="430" width="260" height="64" rx="8" fill="${bar}"/><rect x="96" y="560" width="1088" height="180" rx="12" fill="#eef0f4"/></svg>`);
+  const v = (id, extra) => ({ location: { id }, verdict: "pass", exit_country: id.toUpperCase(), in_country: true, notes: [], redirects: 0, lang: "en", ...extra });
+  return {
+    dns: { varies: true, rows: [
+      { id: "us", ips: ["151.101.1.140"], networks: ["Fastly"] }, { id: "ca", ips: ["151.101.1.140"], networks: ["Fastly"] },
+      { id: "br", ips: ["151.101.193.140"], networks: ["Fastly"] }, { id: "gb", ips: ["151.101.65.140"], networks: ["Fastly"] },
+      { id: "de", ips: ["151.101.65.140"], networks: ["Fastly"] }, { id: "es", ips: ["151.101.65.140"], networks: ["Fastly"] },
+      { id: "ae", ips: ["151.101.129.140"], networks: ["Fastly"] }, { id: "za", error: "No resolver in this country answered" },
+      { id: "in", ips: ["151.101.129.140"], networks: ["Fastly"] }, { id: "sg", ips: ["151.101.129.140"], networks: ["Fastly"] },
+      { id: "jp", ips: ["151.101.129.140"], networks: ["Fastly"] }, { id: "au", ips: ["151.101.193.140"], networks: ["Fastly"] }] },
+    views: {
+      gb: v("gb", { summary: "Loads in 1.4 s.", status: 200, title: "Northwind Traders | Fine foods delivered", load_ms: 1400, exit_network: "M247", image: page("#1f4e79", "Fine foods, delivered", "Free UK delivery over £40") }),
+      de: v("de", { summary: "Loads in 1.9 s.", status: 200, title: "Northwind Traders | Feinkost online", lang: "de", load_ms: 1900, exit_network: "Hetzner",
+        notes: ["Visitors here are sent to northwind.example.de."], image: page("#1f4e79", "Feinkost, geliefert", "Kostenloser Versand ab 40 €") }),
+      in: v("in", { verdict: "warn", summary: "Still loading after 30 seconds: very slow from here.", status: 200, timed_out: true, title: "Northwind Traders", load_ms: 30000, exit_network: "Airtel", image: page("#1f4e79", "Fine foods, delivered", "Loading offers…", "#fafafa") }),
+      jp: v("jp", { summary: "Loads in 2.6 s.", status: 200, title: "Northwind Traders 日本", lang: "ja", load_ms: 2600, exit_network: "Sakura Internet", image: page("#1f4e79", "Northwind Japan", "Shipping to Japan from ¥5,000") }),
+      ae: v("ae", { verdict: "fail", summary: "Blocked from here (HTTP 403).", status: 403, title: "Access denied", load_ms: 600, exit_network: "Etisalat", image: page("#b42318", "Access denied", "This site isn’t available in your region.", "#fff7f5") }),
+    },
+  };
+})();
 const SAMPLE_SPEED = { summary: { download: 187.4e6, upload: 42.1e6, latency: 11.6, jitter: 1.9, downLoadedLatency: 64.2, upLoadedLatency: 38.5, packetLoss: 0 },
   scores: { streaming: { classificationName: "great" }, gaming: { classificationName: "good" }, rtc: { classificationName: "great" } } };
 const SAMPLE_PROP = (() => {
@@ -3722,6 +3999,15 @@ function resumeMailTestFromHash() {
 }
 window.addEventListener("hashchange", resumeMailTestFromHash);
 resumeMailTestFromHash();
+$("world-form").addEventListener("submit", (e) => { e.preventDefault(); runWorld($("world-domain").value); });
+$("world-dialog-close").addEventListener("click", () => $("world-dialog").close());
+$("world-dialog").addEventListener("click", (e) => { if (e.target === $("world-dialog")) $("world-dialog").close(); });
+function worldFromHash() {
+  const m = location.hash.match(/^#world=(.{3,260})$/);
+  if (m) { initWorld(); runWorld(decodeURIComponent(m[1])); }
+}
+window.addEventListener("hashchange", worldFromHash);
+worldFromHash();
 $("ip-form").addEventListener("submit", (e) => { e.preventDefault(); lookupIp($("ip-input").value); });
 function lookupFromHash() {
   const m = location.hash.match(/^#ip=(.{2,60})$/);
