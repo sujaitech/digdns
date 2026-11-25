@@ -595,6 +595,74 @@ class IpReputationTests(Patched):
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
 
 
+class GeoViewTests(Patched):
+    def setUp(self):
+        async def ips(host): return ["93.184.215.14"]
+        async def owner(ip): return {"country": "JP", "provider": "Example DC"} if ip == "45.76.1.9" else {"country": "US", "as_name": "EDGECAST"}
+        self.patch(_ips_of=ips, lookup_ip_owner=owner, BROWSERLESS_TOKEN="tok", USAGE_DB_URL="", USAGE_DB_TOKEN="")
+        self.calls = []
+
+    def fake(self, **raw):
+        base = {"exit_ip": "45.76.1.9", "status": 200, "final_url": "https://example.com/", "title": "Example",
+                "lang": "en", "load_ms": 2300, "redirects": 0, "timed_out": False, "error": None, "shot": "QUJD"}
+        def call(url, country):
+            self.calls.append((url, country)); return 200, {**base, **raw}
+        self.patch(_browserless_geo=call)
+
+    def test_switched_off_without_a_token(self):
+        self.patch(BROWSERLESS_TOKEN="")
+        with self.assertRaises(Exception) as err:
+            run(main.geoview(FakeRequest(), FakeResponse(), domain="example.com", loc="jp"))
+        self.assertEqual(err.exception.status_code, 503)
+
+    def test_unknown_location_and_private_sites_are_refused(self):
+        self.fake()
+        with self.assertRaises(Exception) as err:
+            run(main.geoview(FakeRequest(), FakeResponse(), domain="example.com", loc="xx"))
+        self.assertEqual(err.exception.status_code, 400)
+        async def private(host): return ["10.0.0.5"]
+        self.patch(_ips_of=private)
+        with self.assertRaises(Exception) as err:
+            run(main.geoview(FakeRequest(), FakeResponse(), domain="intranet.example.com", loc="jp"))
+        self.assertEqual(err.exception.status_code, 404)
+        self.assertEqual(self.calls, [])
+
+    def test_a_view_is_loaded_from_the_country_and_cached(self):
+        self.fake()
+        resp = FakeResponse()
+        res = run(main.geoview(FakeRequest(), resp, domain="Example.com", loc="jp"))
+        self.assertEqual(self.calls, [("https://example.com/", "JP")])
+        self.assertEqual((res["verdict"], res["in_country"], res["image"][:23]), ("pass", True, "data:image/jpeg;base64,"))
+        self.assertIn("s-maxage=21600", resp.headers["Cache-Control"])
+
+    def test_blocks_redirects_and_wrong_country_are_explained(self):
+        loc = main.GEO_BY_ID["de"]
+        res = main.geo_summary(loc, {"status": 403, "final_url": "https://example.de/", "shot": None}, {"country": "NL"}, "example.com")
+        self.assertEqual(res["verdict"], "fail")
+        self.assertTrue(any("example.de" in n for n in res["notes"]))
+        self.assertTrue(any("couldn't place a browser in DE" in n for n in res["notes"]))
+
+    def test_daily_allowance_is_enforced(self):
+        self.fake()
+        async def full(key, limit): return not key.startswith("vdig:geo")
+        self.patch(daily_counter=full)
+        with self.assertRaises(Exception) as err:
+            run(main.geoview(FakeRequest(), FakeResponse(), domain="example.com", loc="jp"))
+        self.assertEqual(err.exception.status_code, 429)
+        self.assertEqual(self.calls, [])
+
+    def test_dns_view_shows_each_countrys_answer(self):
+        async def pool(): return {"countries": {"JP": [{"ip": "198.51.100.1", "org": "JP ISP"}], "US": [{"ip": "198.51.100.2", "org": "US ISP"}]}}
+        async def ask(name, ip, place, qname, rtype, recursive, timeout=4.0, **extra):
+            return {"error": None, "values": ["93.184.215.14"] if ip.endswith(".1") else ["93.184.215.20"], "rcode": "NOERROR"}
+        self.patch(resolver_pool=pool, _ask_for_row=ask)
+        res = run(main.geoview_dns(FakeRequest(), FakeResponse(), domain="example.com"))
+        rows = {r["id"]: r for r in res["rows"]}
+        self.assertEqual((rows["jp"]["ips"], rows["us"]["ips"]), (["93.184.215.14"], ["93.184.215.20"]))
+        self.assertIn("error", rows["au"])
+        self.assertTrue(res["varies"])
+
+
 class FrontendTests(unittest.TestCase):
     """Cheap checks on the page itself."""
     def setUp(self):
