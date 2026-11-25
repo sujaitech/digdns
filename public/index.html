@@ -118,6 +118,8 @@
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
           <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Headers &amp; bounces</a>
           <a href="#email-test" data-nav="mailtest" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Email test</a>
+          <a href="#ip" data-nav="ip" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">IP lookup</a>
+          <a href="#speed-test" data-nav="speed" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Speed test</a>
         </nav>
       </div>
 
@@ -192,6 +194,24 @@
       <div id="head-mailtest" hidden>
         <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Test a real email</h1>
         <p class="mt-3 max-w-2xl text-white/80">Get a one-time address, send it an email from the account or app you want to check, and see how it scores: authentication, the sending server’s reputation, a SpamAssassin spam score and the content.</p>
+      </div>
+
+      <!-- Header block: IP lookup -->
+      <div id="head-ip" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Look up an IP address</h1>
+        <p class="mt-3 max-w-2xl text-white/80">See your own public IP, or check any address: who runs it, whether it’s reported for abuse, on spam blocklists or a Tor exit.</p>
+        <form id="ip-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
+          <label for="ip-input" class="sr-only">IP address</label>
+          <input id="ip-input" type="text" spellcheck="false" autocapitalize="off" placeholder="203.0.113.5 or 2001:db8::1" required maxlength="45"
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+          <button id="ip-btn" type="submit" class="slice">Check IP</button>
+        </form>
+      </div>
+
+      <!-- Header block: speed test -->
+      <div id="head-speed" hidden>
+        <h1 class="display mt-10 max-w-2xl text-3xl font-semibold leading-tight sm:text-[2.5rem]">Test your internet speed</h1>
+        <p class="mt-3 max-w-2xl text-white/80">Measures download, upload and latency from this device to Cloudflare’s nearest data centre, including how much your connection slows down when it’s busy.</p>
       </div>
 
       <!-- Header block: DMARC builder -->
@@ -435,6 +455,39 @@
     </article>
   </main>
 
+  <!-- ================= VIEW: IP LOOKUP ================= -->
+  <main id="view-ip" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <article class="divide-y divide-rule overflow-hidden rounded-lg border border-rule bg-white">
+      <div id="ip-result" aria-live="polite"></div>
+      <div id="myip-box"></div>
+    </article>
+  </main>
+
+  <!-- ================= VIEW: SPEED TEST ================= -->
+  <main id="view-speed" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
+    <article class="overflow-hidden rounded-lg border border-rule bg-white">
+      <div class="grid gap-x-10 gap-y-6 px-6 py-8 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]">
+        <div>
+          <h2 class="text-[17px] font-semibold text-navy">Your speed</h2>
+          <p id="sp-status" class="mt-1.5 text-[14px] text-ink/70" aria-live="polite">Not started</p>
+        </div>
+        <div class="@container min-w-0 space-y-6">
+          <div class="grid grid-cols-2 gap-6">
+            <div><div class="text-[13px] text-ink/60">Download</div><div class="mt-1 font-mono text-4xl font-semibold tabular-nums text-navy sm:text-5xl"><span id="sp-down">–</span> <span class="text-base font-normal text-ink/60">Mbps</span></div></div>
+            <div><div class="text-[13px] text-ink/60">Upload</div><div class="mt-1 font-mono text-4xl font-semibold tabular-nums text-navy sm:text-5xl"><span id="sp-up">–</span> <span class="text-base font-normal text-ink/60">Mbps</span></div></div>
+          </div>
+          <div id="sp-rows" class="text-[14px]"></div>
+          <div id="sp-uses" class="text-[14px]"></div>
+          <div class="flex flex-wrap items-center gap-3">
+            <button id="sp-start" type="button" class="slice">Start test</button>
+            <button id="sp-stop" type="button" hidden class="rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Stop</button>
+          </div>
+          <p class="max-w-3xl text-[13px] leading-snug text-ink/60">On a fast connection the test can download a few hundred megabytes, so avoid it on a capped mobile plan. It measures the path to Cloudflare, not to any one website, and Wi-Fi, VPNs and other devices using the connection all lower the result. It runs Cloudflare’s open-source speed test, and Cloudflare receives the anonymous results.</p>
+        </div>
+      </div>
+    </article>
+  </main>
+
   <!-- ================= VIEW: EMAIL HEADER ANALYZER ================= -->
   <main id="view-headers" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <article class="overflow-hidden rounded-lg border border-rule bg-white">
@@ -468,7 +521,7 @@
   </main>
 
   <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. Website screenshots are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
+    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. Website screenshots are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
   </footer>
 
 <script>
@@ -3049,11 +3102,215 @@ function renderMailReport(r, t) {
 }
 
 /* =====================================================================
+   IP LOOKUP: your connection + any IP's reputation
+   ===================================================================== */
+const COUNTRY_NAME = (code) => { try { return code ? new Intl.DisplayNames(["en"], { type: "region" }).of(code) : null; } catch { return code; } };
+const ago = (iso) => {
+  if (!iso) return null;
+  const days = Math.round((Date.now() - new Date(iso)) / 86400000);
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : days < 60 ? `${days} days ago` : `${Math.round(days / 30)} months ago`;
+};
+function ownerText(o) {
+  if (!o) return null;
+  return [o.provider || o.as_name, o.asn ? `AS${o.asn}` : null].filter(Boolean).join(", ");
+}
+function linkOut(href, text) {
+  const a = el("a", "text-blue underline underline-offset-2 hover:text-navy", text);
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+/** A 0–100 meter for AbuseIPDB's confidence score, with the number written out. */
+function scoreMeter(score) {
+  const status = score >= 75 ? "fail" : score >= 25 ? "warn" : "pass";
+  const wrap = el("div", "flex items-center gap-3");
+  const track = el("div", "h-2 w-28 min-w-0 shrink overflow-hidden rounded-full bg-rule");
+  const fill = el("div", `h-full rounded-full ${st(status).bar}`);
+  fill.style.width = `${Math.max(2, score)}%`;
+  track.setAttribute("role", "img"); track.setAttribute("aria-label", `${score} out of 100`);
+  return add(wrap, add(track, fill), el("span", `whitespace-nowrap font-mono text-[13px] font-semibold ${st(status).text}`, `${score}%`));
+}
+
+let ipRun = 0;
+async function lookupIp(ip, { push = true } = {}) {
+  ip = (ip || "").trim();
+  if (!ip) return;
+  $("ip-input").value = ip;
+  if (push) history.replaceState(null, "", `#ip=${encodeURIComponent(ip)}`);
+  const mine = ++ipRun;
+  const out = $("ip-result");
+  out.replaceChildren(add(el("div", "px-6 py-7 sm:px-10"), el("p", "text-[14px] text-ink/60", `Checking ${ip}: network owner, abuse reports, blocklists and Tor…`)));
+  $("ip-btn").disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/ip?ip=${encodeURIComponent(ip)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Lookup failed (HTTP ${res.status}).`);
+    if (mine === ipRun) renderIpReport(data);
+  } catch (err) {
+    if (mine === ipRun) out.replaceChildren(add(el("div", "px-6 py-7 text-fail sm:px-10"),
+      el("p", "", err instanceof TypeError ? "Couldn't reach the VdigDNS service. Check your connection and try again." : err.message)));
+  } finally { $("ip-btn").disabled = false; }
+}
+
+function renderIpReport(r) {
+  const out = $("ip-result");
+  if (r.status === "error") { out.replaceChildren(add(el("div", "px-6 py-7 text-fail sm:px-10"), findings(r))); return; }
+  const { wrap, body } = section("sec-ip", r.ip, r.status, r.summary);
+  wrap.querySelector("h3").classList.add("font-mono", "break-anywhere");
+  if (!r.public) { out.replaceChildren(wrap); return; }
+
+  const a = r.abuseipdb || {};
+  const rep = el("div");
+  add(rep, subheading("Abuse reports"));
+  if (a.available) {
+    add(rep, add(el("div", "mt-2"),
+      row("Confidence of abuse", scoreMeter(a.score)),
+      row("Reports", a.reports ? `${a.reports.toLocaleString()} from ${a.reporters.toLocaleString()} ${a.reporters === 1 ? "person" : "people"}, in the last 90 days` : "None in the last 90 days"),
+      a.last_reported ? row("Last reported", `${ago(a.last_reported)} (${new Date(a.last_reported).toLocaleDateString()})`) : null,
+      a.usage_type ? row("Usage type", a.usage_type) : null,
+      a.isp ? row("ISP", a.isp) : null,
+      a.domain ? row("Domain", a.domain, true) : null),
+      add(el("p", "mt-2 text-[13px] text-ink/60"), document.createTextNode("Community reports from "), linkOut(a.url, "AbuseIPDB"),
+        document.createTextNode(", where you can read each report or report this address yourself.")));
+  } else {
+    add(rep, el("p", "mt-2 text-[13px] text-ink/60", a.reason || "Not checked."),
+      add(el("p", "text-[13px]"), linkOut(`https://www.abuseipdb.com/check/${encodeURIComponent(r.ip)}`, "Look it up on AbuseIPDB instead")));
+  }
+
+  const net = add(el("div"), subheading("Network"), add(el("div", "mt-2"),
+    row("Owner", ownerText(r.owner) || "Unknown"),
+    r.owner?.prefix ? row("Address block", r.owner.prefix, true) : null,
+    row("Country", COUNTRY_NAME(r.owner?.country || a.country) || "Unknown"),
+    row("Reverse DNS", r.ptr?.length ? `${r.ptr.join(", ")}${r.forward_confirmed ? "" : " (doesn’t point back to this IP)"}` : "None", !!r.ptr?.length),
+    row("Tor exit node", r.tor === true ? "Yes" : r.tor === false ? "No" : "Couldn’t check")));
+
+  let lists = null;
+  const entry = r.blocklists?.ips?.[0];
+  if (entry) lists = add(el("div"), subheading("Spam blocklists"), add(el("div", "mt-2"), listChips(entry.lists), listReasons(entry.lists)),
+    el("p", "mt-2 text-[13px] text-ink/60", "These lists matter mainly for servers that send email."));
+  else if (r.version === 6) lists = add(el("div"), subheading("Spam blocklists"), el("p", "mt-2 text-[13px] text-ink/60", "Blocklists are checked for IPv4 addresses only; most don’t list IPv6."));
+
+  add(body, findings(r), rep, net, lists);
+  out.replaceChildren(wrap);
+}
+
+let myIpLoaded = false;
+async function loadMyIp() {
+  if (myIpLoaded) return;
+  myIpLoaded = true;
+  const box = $("myip-box");
+  const { wrap, body } = section("sec-myip", "Your connection", "info", "What websites see when you visit");
+  const v4 = el("span", "font-mono text-[13px]", "Checking…"), v6 = el("span", "font-mono text-[13px]", "Checking…");
+  const rows = el("div");
+  add(body, rows);
+  box.replaceChildren(wrap);
+  let me = {};
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/myip`, { cache: "no-store" });
+    me = res.ok ? await res.json() : {};
+  } catch { /* shown as unknown below */ }
+  if (window.DIGDNS_SAMPLE) me = SAMPLE_MYIP;
+  const place = [me.city, me.region, COUNTRY_NAME(me.country)].filter(Boolean).join(", ");
+  const checkBtn = me.ip ? actionButton("Check this IP’s reputation", () => { lookupIp(me.ip); window.scrollTo(0, 0); }) : null;
+  add(rows,
+    row("Public IP", me.ip ? add(el("div", "flex flex-wrap items-center gap-2"), el("span", "font-mono text-[15px] font-semibold text-navy", me.ip), copyButton(me.ip)) : "Unknown"),
+    row("IPv4", v4), row("IPv6", v6),
+    row("Approximate location", place || "Unknown"),
+    row("Network", ownerText(me.owner) || "Unknown"),
+    row("Reverse DNS", me.ptr?.length ? me.ptr.join(", ") : "None", !!me.ptr?.length),
+    row("Local network IP", "Not visible to websites"),
+    row("Browser", me.user_agent || navigator.userAgent, true));
+  add(body,
+    add(el("div", "max-w-3xl space-y-2 text-[13px] leading-snug text-ink/70"),
+      el("p", "", "The location comes from your IP address, so it’s usually your provider’s nearest hub, not your street. With a VPN or iCloud Private Relay you’ll see the VPN’s address instead."),
+      el("p", "", "Your local network IP (like 192.168.1.20) is never sent to websites, and browsers have hidden it from scripts since 2019. To find it: on Windows run ipconfig in Command Prompt; on a Mac open System Settings, then Network; on a phone look in the Wi-Fi network’s details.")),
+    checkBtn);
+  if (window.DIGDNS_SAMPLE) { v4.textContent = "49.207.51.18"; v6.textContent = "2401:4900:1c5a:8f2e::1b"; return; }
+  // Each address family on its own: the visit above used one, the other may exist too.
+  const family = async (url, target) => {
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
+      const res = await fetch(url, { signal: ctl.signal, cache: "no-store" }); clearTimeout(t);
+      target.textContent = (await res.json()).ip || "None";
+    } catch { target.textContent = "None found"; target.className = "text-[13px] text-ink/60"; }
+  };
+  family("https://api.ipify.org?format=json", v4);
+  family("https://api6.ipify.org?format=json", v6);
+}
+
+/* =====================================================================
+   SPEED TEST (Cloudflare's open-source engine, run in the browser)
+   ===================================================================== */
+const SPEED_LIB = "https://cdn.jsdelivr.net/npm/@cloudflare/speedtest@1.10.1/+esm";
+let speedEngine = null;
+const mbps = (bps) => (bps == null ? "–" : bps >= 1e8 ? (bps / 1e6).toFixed(0) : (bps / 1e6).toFixed(1));
+const ms = (v) => (v == null ? "–" : `${Math.round(v)} ms`);
+/** Read each figure through its own documented getter; anything not measured yet stays empty. */
+function speedSummary(results) {
+  const get = (name) => { try { const v = results[name](); return Number.isFinite(v) ? v : null; } catch { return null; } };
+  return { download: get("getDownloadBandwidth"), upload: get("getUploadBandwidth"), latency: get("getUnloadedLatency"),
+    jitter: get("getUnloadedJitter"), downLoadedLatency: get("getDownLoadedLatency"), upLoadedLatency: get("getUpLoadedLatency"), packetLoss: get("getPacketLoss") };
+}
+const SPEED_STEP = { latency: "Measuring latency…", download: "Measuring download…", upload: "Measuring upload…", packetLoss: "Measuring packet loss…" };
+
+function renderSpeed(sum, scores) {
+  $("sp-down").textContent = mbps(sum.download);
+  $("sp-up").textContent = mbps(sum.upload);
+  const bloat = sum.latency != null && sum.downLoadedLatency != null ? sum.downLoadedLatency - sum.latency : null;
+  $("sp-rows").replaceChildren(
+    row("Latency (idle)", ms(sum.latency)),
+    row("Jitter", ms(sum.jitter)),
+    row("Latency while downloading", sum.downLoadedLatency == null ? "–" : `${ms(sum.downLoadedLatency)}${bloat > 100 ? " (slows down a lot when busy)" : ""}`),
+    row("Latency while uploading", ms(sum.upLoadedLatency)),
+    row("Packet loss", sum.packetLoss == null ? "–" : `${(sum.packetLoss * 100).toFixed(1)}%`));
+  if (!scores) return;
+  const WORD = { bad: ["fail", "Bad"], poor: ["warn", "Poor"], average: ["info", "Average"], good: ["pass", "Good"], great: ["pass", "Great"] };
+  const uses = [["streaming", "Streaming video"], ["gaming", "Online gaming"], ["rtc", "Video calls"]].filter(([k]) => scores[k]?.classificationName);
+  $("sp-uses").replaceChildren(...(uses.length ? [subheading("Good enough for"), add(el("div", "mt-2"),
+    uses.map(([k, label]) => { const [s, w] = WORD[scores[k].classificationName] || ["info", scores[k].classificationName]; return row(label, pill(s, w)); }))] : []));
+}
+
+async function startSpeedTest() {
+  const start = $("sp-start"), stop = $("sp-stop"), status = $("sp-status");
+  start.disabled = true; status.textContent = "Starting…";
+  $("sp-uses").replaceChildren();
+  try {
+    if (!speedEngine) {
+      const SpeedTest = (await import(SPEED_LIB)).default;
+      speedEngine = new SpeedTest({ autoStart: false });
+      speedEngine.onResultsChange = ({ type }) => {
+        status.textContent = SPEED_STEP[type] || "Measuring…";
+        renderSpeed(speedSummary(speedEngine.results));
+      };
+      speedEngine.onFinish = (results) => {
+        let scores = null;
+        try { scores = results.getScores(); } catch { /* scores need every measurement */ }
+        renderSpeed(speedSummary(results), scores);
+        status.textContent = "Done"; start.textContent = "Run again"; start.disabled = false; stop.hidden = true;
+      };
+      speedEngine.onError = (e) => { status.textContent = `Part of the test failed: ${String(e).slice(0, 140)}`; };
+      speedEngine.play();
+    } else {
+      speedEngine.restart();
+    }
+    stop.hidden = false;
+  } catch {
+    status.replaceChildren(document.createTextNode("Couldn’t load the speed test. A content blocker may have stopped it. You can use "),
+      linkOut("https://speed.cloudflare.com/", "speed.cloudflare.com"), document.createTextNode(" directly."));
+    start.disabled = false;
+  }
+}
+function stopSpeedTest() {
+  if (speedEngine?.isRunning) speedEngine.pause();
+  $("sp-status").textContent = "Stopped"; $("sp-stop").hidden = true;
+  $("sp-start").textContent = "Run again"; $("sp-start").disabled = false;
+}
+
+/* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
-const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test" };
+const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test", ip: "#ip", speed: "#speed-test" };
 function showView(name) {
-  ["report", "prop", "spf", "dmarc", "headers", "mailtest"].forEach((v) => {
+  ["report", "prop", "spf", "dmarc", "headers", "mailtest", "ip", "speed"].forEach((v) => {
     $(`view-${v}`).hidden = v !== name;
     $(`head-${v}`).hidden = v !== name;
   });
@@ -3064,9 +3321,10 @@ function showView(name) {
     if (on) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
   });
   if (name === "spf") updateSpf();
+  if (name === "ip") loadMyIp();
 }
 function viewFromHash() {
-  // #email-test=<id> resumes a running email test
+  // #email-test=<id> resumes a running email test; #ip=<address> opens a lookup
   return Object.keys(VIEWS).find((k) => VIEWS[k] && (VIEWS[k] === location.hash || location.hash.startsWith(`${VIEWS[k]}=`))) || "report";
 }
 window.addEventListener("hashchange", () => { showView(viewFromHash()); window.scrollTo(0, 0); });
@@ -3197,6 +3455,24 @@ const SAMPLE = {
 };
 
 // Sample for the propagation tab (shown only in the design preview)
+const SAMPLE_MYIP = { ip: "49.207.51.18", country: "IN", region: "TN", city: "Chennai", version: 4, public: true,
+  ptr: ["49.207.51.18.actcorp.in"], owner: { asn: "24309", provider: "Atria Convergence Technologies", prefix: "49.207.48.0/20", country: "IN" },
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36" };
+const SAMPLE_IP = { ip: "185.220.101.47", version: 4, public: true, status: "fail", summary: "High risk: this address is widely reported for abuse.",
+  ptr: ["tor-exit-47.for-privacy.net"], forward_confirmed: true, tor: true,
+  owner: { asn: "60729", prefix: "185.220.101.0/24", country: "DE", provider: "Stiftung Erneuerbare Freiheit" },
+  abuseipdb: { available: true, score: 100, reports: 2841, reporters: 412, last_reported: new Date(Date.now() - 3 * 3600e3).toISOString(),
+    usage_type: "Data Center/Web Hosting/Transit", isp: "Stiftung Erneuerbare Freiheit", domain: "for-privacy.net", country: "DE", tor: true,
+    url: "https://www.abuseipdb.com/check/185.220.101.47" },
+  blocklists: { ips: [{ ip: "185.220.101.47", roles: ["Checked IP"], lists: [
+    { list: "SpamCop", state: "clean" }, { list: "Mailspike", state: "listed", url: "https://mailspike.org/", reason: "Poor reputation" },
+    { list: "PSBL", state: "clean" }, { list: "UCEPROTECT L1", state: "listed", url: "https://www.uceprotect.net/" },
+    { list: "SpamRATS", state: "clean" }, { list: "DroneBL", state: "listed", url: "https://dronebl.org/", reason: "Tor exit" }] }] },
+  listed_on: ["Mailspike", "UCEPROTECT L1", "DroneBL"], errors: [],
+  warnings: ["Tor exit node: whatever one Tor user does, every site sees it coming from this address. Reports may not be about the person you're looking at."],
+  notes: ["Usage type: a server in a data centre, not a home or office connection."] };
+const SAMPLE_SPEED = { summary: { download: 187.4e6, upload: 42.1e6, latency: 11.6, jitter: 1.9, downLoadedLatency: 64.2, upLoadedLatency: 38.5, packetLoss: 0 },
+  scores: { streaming: { classificationName: "great" }, gaming: { classificationName: "good" }, rtc: { classificationName: "great" } } };
 const SAMPLE_PROP = (() => {
   const NEW = ["203.0.113.24"], OLD = ["198.51.100.7"];
   const regional = [
@@ -3446,6 +3722,15 @@ function resumeMailTestFromHash() {
 }
 window.addEventListener("hashchange", resumeMailTestFromHash);
 resumeMailTestFromHash();
+$("ip-form").addEventListener("submit", (e) => { e.preventDefault(); lookupIp($("ip-input").value); });
+function lookupFromHash() {
+  const m = location.hash.match(/^#ip=(.{2,60})$/);
+  if (m) lookupIp(decodeURIComponent(m[1]), { push: false });
+}
+window.addEventListener("hashchange", lookupFromHash);
+lookupFromHash();
+$("sp-start").addEventListener("click", startSpeedTest);
+$("sp-stop").addEventListener("click", stopSpeedTest);
 $("hdr-form").addEventListener("submit", (e) => { e.preventDefault(); runHeaderAnalysis(); });
 $("hdr-sample").addEventListener("click", () => { $("hdr-input").value = SAMPLE_HEADERS; runHeaderAnalysis(); });
 $("hdr-sample-bounce").addEventListener("click", () => { $("hdr-input").value = SAMPLE_BOUNCE; runHeaderAnalysis(); });
@@ -3471,6 +3756,7 @@ if (params.get("domain")) { $("domain-input").value = params.get("domain"); if (
 else if (params.has("sample") || window.DIGDNS_SAMPLE) renderReport(SAMPLE);
 // The design preview also fills the propagation tab with a sample result.
 if (window.DIGDNS_SAMPLE) renderPropagation(SAMPLE_PROP);
+if (window.DIGDNS_SAMPLE) { renderIpReport(SAMPLE_IP); renderSpeed(SAMPLE_SPEED.summary, SAMPLE_SPEED.scores); $("sp-status").textContent = "Sample result"; }
 </script>
 </body>
 </html>
