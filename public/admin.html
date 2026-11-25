@@ -11,24 +11,25 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Archivo:wdth,wght@125,800&display=swap" rel="stylesheet" />
   <!-- The same compiled stylesheet as the main page (build.py scans this file too) -->
   <link rel="stylesheet" href="/app.css" />
+  <script>try { var t = localStorage.getItem("vdig-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <style>
-    body { background: #F4F5F7; color: #22232E; }
+    body { background: var(--color-canvas); color: var(--color-ink); }
     .display { letter-spacing: -0.02em; }
     .wordmark { font-family: "Archivo", "IBM Plex Sans", sans-serif; font-stretch: 125%; font-weight: 800; }
     .semi-wide { font-stretch: 112%; }
     .break-anywhere { overflow-wrap: anywhere; }
     .tabular { font-variant-numeric: tabular-nums; }
-    .card { background: #fff; border-radius: .5rem; border: 1px solid #E2E4EA; }
+    .card { background: var(--color-surface); border-radius: .5rem; border: 1px solid var(--color-rule); }
     /* Activity chart: one bar per day (or hour). The whole column is the hover target. */
     .bar-col { position: relative; flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; cursor: default; outline: none; }
     .bar-col .bar { width: 100%; background: #27AAE1; border-radius: 4px 4px 0 0; min-height: 0; transition: background-color .15s; }
-    .bar-col:hover .bar, .bar-col:focus-visible .bar { background: #262262; }
+    .bar-col:hover .bar, .bar-col:focus-visible .bar { background: var(--color-navy); }
     .bar-col:focus-visible { box-shadow: inset 0 0 0 2px #27AAE1; border-radius: 4px; }
     .share { height: 6px; border-radius: 3px; background: #27AAE1; }
   </style>
 </head>
 <body class="min-h-screen bg-canvas font-sans text-ink antialiased">
-  <header class="bg-navy text-white">
+  <header class="bg-band text-white">
     <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-5 sm:px-6">
       <a href="/" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
         <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
@@ -55,7 +56,7 @@
       <h1 class="semi-wide text-xl font-bold text-navy">Finish setting up the usage log</h1>
       <p class="mt-1 text-[14px] text-ink/70">This page reads the live server’s settings. Fix the red items, redeploy, then reload this page.</p>
       <ul id="setup-list" class="mt-5 space-y-4"></ul>
-      <button id="setup-recheck" class="mt-6 rounded-lg bg-navy px-5 py-2.5 text-sm font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Check again</button>
+      <button id="setup-recheck" class="mt-6 rounded-lg bg-ink px-5 py-2.5 text-sm font-bold text-surface hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Check again</button>
     </section>
 
     <!-- Sign in -->
@@ -70,7 +71,7 @@
       <label class="mt-3 flex items-center gap-2 text-[14px] text-ink/80">
         <input id="remember" type="checkbox" class="h-4 w-4 accent-sky" /> Remember me on this device
       </label>
-      <button class="mt-5 w-full rounded-lg bg-navy px-6 py-3 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Show the log</button>
+      <button class="mt-5 w-full rounded-lg bg-ink px-6 py-3 font-bold text-surface hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Show the log</button>
       <p id="signin-error" role="alert" class="mt-3 hidden text-[14px] text-fail"></p>
     </form>
 
@@ -81,7 +82,7 @@
           <h1 class="display text-3xl font-bold text-navy">Who’s using VdigDNS</h1>
           <p id="updated" class="mt-1 text-[13px] text-ink/60"></p>
         </div>
-        <button id="csv" class="rounded-lg border border-sky bg-white px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Download CSV</button>
+        <button id="csv" class="rounded-lg border border-sky bg-surface px-3.5 py-2 text-sm font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Download CSV</button>
       </div>
 
       <div id="tiles" class="grid grid-cols-2 gap-4 lg:grid-cols-4"></div>
@@ -94,7 +95,7 @@
           </div>
           <div class="relative mt-4">
             <div id="chart" class="flex h-44 items-end gap-[3px] border-b border-rule" role="list" aria-label="Checks over time"></div>
-            <div id="chart-tip" hidden class="pointer-events-none absolute z-10 -translate-x-1/2 rounded-lg bg-navy px-2.5 py-1.5 text-[12px] whitespace-nowrap text-white shadow-lg"></div>
+            <div id="chart-tip" hidden class="pointer-events-none absolute z-10 -translate-x-1/2 rounded-lg bg-ink px-2.5 py-1.5 text-[12px] whitespace-nowrap text-surface shadow-lg"></div>
             <div id="chart-axis" class="mt-1.5 flex gap-[3px] text-[11px] text-ink/50"></div>
           </div>
         </section>
@@ -118,13 +119,13 @@
       </div>
 
       <section class="card min-w-0">
-        <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-t-2xl border-b border-rule bg-white/95 p-4 backdrop-blur sm:px-6">
+        <div class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-t-2xl border-b border-rule bg-surface/95 p-4 backdrop-blur sm:px-6">
           <h2 class="semi-wide mr-auto text-lg font-bold text-navy">Every check</h2>
           <label class="sr-only" for="q">Search</label>
           <input id="q" type="search" placeholder="Search IP, domain, place, browser"
                  class="w-full min-w-0 rounded-lg border border-rule px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20 sm:w-72" />
           <label class="sr-only" for="tool">Tool</label>
-          <select id="tool" class="rounded-lg border border-rule bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+          <select id="tool" class="rounded-lg border border-rule bg-surface px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
             <option value="">All tools</option>
           </select>
           <button id="clear" hidden class="rounded-lg px-2 py-2 text-sm text-blue underline underline-offset-4 hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Clear filters</button>
@@ -157,7 +158,7 @@ const store = {
   set(k, v, keep) { try { (keep ? localStorage : sessionStorage).setItem(k, v); } catch { /* storage blocked */ } },
   del(k) { try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch { /* fine */ } },
 };
-const TOOL = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist check", mailtest: "Email test", ip: "IP lookup", geoview: "World view" };
+const TOOL = { report: "Domain report", propagation: "Propagation", whois: "Registration", dkim: "DKIM selector", blocklist: "Blocklist check", mailtest: "Email test", ip: "IP lookup", geoview: "World view", geostatus: "World status" };
 const REGION = (() => { try { return new Intl.DisplayNames(undefined, { type: "region" }); } catch { return null; } })();
 const countryName = (c) => { try { return c ? REGION?.of(c) || c : ""; } catch { return c || ""; } };
 const place = (e) => [e.city, countryName(e.country)].filter(Boolean).join(", ");

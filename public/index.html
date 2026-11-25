@@ -20,6 +20,7 @@
 
   <!-- Design tokens: each --color-x becomes bg-x / text-x / border-x classes.
        build.py reads this block when compiling app.css, so change colours and fonts here. -->
+  <script>try { var t = localStorage.getItem("vdig-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <style type="text/tailwindcss">
     @theme {
       --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -37,10 +38,33 @@
       --color-pass: #18794E;  --color-pass-tint: #EEF6F1;
       --color-warn: #995700;  --color-warn-tint: #FBF3E6;
       --color-fail: #B42318;  --color-fail-tint: #FBEDEB;
+
+      --color-surface: #FFFFFF;  /* sheets, cards and inputs */
+      --color-band:    #262262;  /* the navy header band and dark panels: stays dark in both themes */
+      --color-land:    #E7E9F0;  /* World view map */
+    }
+
+    /* Dark theme: the same tokens, re-pointed. Follows the device setting unless the visitor picked
+       one with the toggle (data-theme on <html>). Neutrals keep a hint of the navy hue. */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --color-navy: #ECEDFA; --color-blue: #6CC6EF; --color-canvas: #0F1019; --color-ink: #D5D7E2; --color-rule: #2A2C3C;
+        --color-surface: #171824; --color-band: #1B1A45; --color-land: #262839;
+        --color-pass: #4CC38A; --color-pass-tint: #10241A; --color-warn: #E2A84B; --color-warn-tint: #281F10;
+        --color-fail: #F27A6E; --color-fail-tint: #2C1614;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --color-navy: #ECEDFA; --color-blue: #6CC6EF; --color-canvas: #0F1019; --color-ink: #D5D7E2; --color-rule: #2A2C3C;
+      --color-surface: #171824; --color-band: #1B1A45; --color-land: #262839;
+      --color-pass: #4CC38A; --color-pass-tint: #10241A; --color-warn: #E2A84B; --color-warn-tint: #281F10;
+      --color-fail: #F27A6E; --color-fail-tint: #2C1614;
+      color-scheme: dark;
     }
   </style>
   <style>
-    body { background: #F4F5F7; color: #22232E; font-feature-settings: "ss02"; }
+    body { background: var(--color-canvas); color: var(--color-ink); font-feature-settings: "ss02"; }
     /* Headings: plain IBM Plex Sans, slightly tightened when large. Only the logo uses the wide face. */
     .display { letter-spacing: -0.02em; }
     .semi-wide { letter-spacing: -0.005em; }
@@ -48,6 +72,8 @@
     .break-anywhere { overflow-wrap: anywhere; }
     h1, h2, h3 { text-wrap: balance; }
     .tabular { font-variant-numeric: tabular-nums; }
+    /* A collapsed (all-passing) report section: just its name, verdict and "Show details" */
+    section[data-collapsed="1"] { padding-top: 1.25rem; padding-bottom: 1.25rem; }
 
     @media (prefers-reduced-motion: reduce) {
       .animate-pulse, .animate-spin { animation: none; }
@@ -91,17 +117,18 @@
     .scope-opt input:focus-visible + span { outline: 2px solid #27AAE1; outline-offset: 2px; }
 
     /* Custom checkbox/radio cards in the builders */
-    .choice:has(input:checked) { border-color: #27AAE1; background: rgba(39,170,225,.08); }
+    .choice:has(input:checked) { border-color: #27AAE1; background: rgba(39,170,225,.1); }
     .choice:has(input:focus-visible) { outline: 2px solid #27AAE1; outline-offset: 2px; }
   </style>
 </head>
 <body class="min-h-screen bg-canvas font-sans text-ink antialiased">
 
   <!-- ================= HEADER ================= -->
-  <header class="bg-navy pb-24 text-white">
+  <header class="bg-band pb-24 text-white">
     <div class="mx-auto max-w-5xl px-4 pt-7 sm:px-6">
       <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <!-- Logo: a sky circle with a navy check that doubles as the "V", then the wordmark -->
+        <div class="flex w-full items-center justify-between gap-4">
         <a href="/" id="home-link" aria-label="VdigDNS home, start a new check" class="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">
           <svg class="h-8 w-8 shrink-0" viewBox="0 0 32 32" aria-hidden="true">
             <circle cx="16" cy="16" r="15" fill="#27AAE1" />
@@ -109,16 +136,23 @@
           </svg>
           <span class="wordmark text-2xl">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></span>
         </a>
+          <button id="theme-btn" type="button" class="inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-white/75 hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky" aria-label="Switch to dark mode">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path id="theme-icon" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+            <span id="theme-label">Dark</span>
+          </button>
+        </div>
         <!-- Tabs: the tools -->
         <!-- On phones the tabs become one swipeable row instead of wrapping -->
-        <nav aria-label="Tools" class="-mx-4 flex w-[calc(100%+2rem)] gap-6 overflow-x-auto px-4 text-[15px] [scrollbar-width:none] sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden">
+        <nav aria-label="Tools" class="-mx-4 flex w-[calc(100%+2rem)] gap-5 overflow-x-auto px-4 text-[14.5px] [scrollbar-width:none] sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden">
           <a href="#" data-nav="report" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Domain report</a>
           <a href="#propagation" data-nav="prop" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Propagation</a>
           <a href="#world" data-nav="world" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">World view</a>
+          <span aria-hidden="true" class="my-2.5 w-px shrink-0 self-stretch bg-white/20"></span>
           <a href="#spf-builder" data-nav="spf" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">SPF builder</a>
           <a href="#dmarc-builder" data-nav="dmarc" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">DMARC builder</a>
           <a href="#header-analyzer" data-nav="headers" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Headers &amp; bounces</a>
           <a href="#email-test" data-nav="mailtest" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Email test</a>
+          <span aria-hidden="true" class="my-2.5 w-px shrink-0 self-stretch bg-white/20"></span>
           <a href="#ip" data-nav="ip" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">IP lookup</a>
           <a href="#speed-test" data-nav="speed" class="tab shrink-0 whitespace-nowrap border-b-2 border-transparent py-2 text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Speed test</a>
         </nav>
@@ -131,7 +165,7 @@
           <label for="domain-input" class="sr-only">Domain to check</label>
           <input id="domain-input" name="domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
                  placeholder="example.com" required maxlength="253"
-                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-surface px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
           <button id="search-btn" type="submit" class="slice">
             <svg id="spinner" class="hidden h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
@@ -157,9 +191,9 @@
         <form id="prop-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
           <label for="prop-domain" class="sr-only">Domain or hostname</label>
           <input id="prop-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="www.example.com" required maxlength="253"
-                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-surface px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
           <label for="prop-type" class="sr-only">Record type</label>
-          <select id="prop-type" class="rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
+          <select id="prop-type" class="rounded-lg border-2 border-transparent bg-surface px-4 py-3.5 font-mono text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
             <option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>NS</option><option>TXT</option><option>CAA</option>
           </select>
           <button id="prop-btn" type="submit" class="slice">Check</button>
@@ -172,7 +206,7 @@
             <label class="scope-opt"><input type="radio" name="prop-scope" value="global" class="sr-only" /><span>Big public DNS only</span></label>
           </div>
           <label for="prop-country" class="sr-only">Country</label>
-          <select id="prop-country" hidden class="rounded-lg border-2 border-transparent bg-white px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
+          <select id="prop-country" hidden class="rounded-lg border-2 border-transparent bg-surface px-3 py-2 text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/30">
             <option value="">Loading countries…</option>
           </select>
           <p id="prop-scope-hint" class="w-full text-[13px] text-white/60">One resolver in each of up to 60 countries, plus Google, Cloudflare and the other big public resolvers.</p>
@@ -204,7 +238,7 @@
         <form id="world-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
           <label for="world-domain" class="sr-only">Website domain</label>
           <input id="world-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="example.com" required maxlength="253"
-                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-surface px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
           <button id="world-btn" type="submit" class="slice">Check</button>
         </form>
       </div>
@@ -216,7 +250,7 @@
         <form id="ip-form" class="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row" autocomplete="off">
           <label for="ip-input" class="sr-only">IP address</label>
           <input id="ip-input" type="text" spellcheck="false" autocapitalize="off" placeholder="203.0.113.5 or 2001:db8::1" required maxlength="45"
-                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-white px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
+                 class="min-w-0 flex-1 rounded-lg border-2 border-transparent bg-surface px-4 py-3.5 font-mono text-lg text-navy placeholder-slate-400 outline-none focus:border-sky focus:ring-4 focus:ring-sky/30" />
           <button id="ip-btn" type="submit" class="slice">Check IP</button>
         </form>
       </div>
@@ -237,9 +271,9 @@
 
   <!-- ================= VIEW: DOMAIN REPORT ================= -->
   <main id="view-report" class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <div id="error-box" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
+    <div id="error-box" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-surface p-5 text-fail"></div>
 
-    <section id="intro" class="rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-10">
+    <section id="intro" class="rounded-2xl bg-surface p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-10">
       <h2 class="semi-wide text-xl font-semibold text-navy">What the report covers</h2>
       <div class="mt-5 grid gap-x-10 gap-y-5 text-[15px] leading-relaxed sm:grid-cols-2">
         <p><strong class="text-navy">Website.</strong> Whether it’s up, how fast it answers, its redirects and security headers, and what it’s built with.</p>
@@ -250,7 +284,7 @@
     </section>
 
     <div id="report" class="hidden" aria-live="polite">
-      <article class="overflow-hidden rounded-lg border border-rule bg-white">
+      <article class="overflow-hidden rounded-lg border border-rule bg-surface">
         <div id="sample-banner" class="hidden border-b border-rule bg-canvas px-6 py-2.5 text-sm text-ink/80 sm:px-10">
           This is a sample report with made-up data for a fictional domain. Enter a real domain above to run a live check.
         </div>
@@ -263,8 +297,8 @@
 
   <!-- ================= VIEW: PROPAGATION ================= -->
   <main id="view-prop" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <div id="prop-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
-    <article id="prop-sheet" class="overflow-hidden rounded-lg border border-rule bg-white" aria-live="polite">
+    <div id="prop-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-surface p-5 text-fail"></div>
+    <article id="prop-sheet" class="overflow-hidden rounded-lg border border-rule bg-surface" aria-live="polite">
       <div class="p-6 sm:p-10">
         <h2 class="semi-wide text-xl font-semibold text-navy">When to use this</h2>
         <p class="mt-3 max-w-3xl text-[15px] leading-relaxed">After you change a DNS record, resolvers keep serving their cached copy until its TTL runs out. This shows which ones already have the new answer, and how long the rest may hold the old one.</p>
@@ -275,7 +309,7 @@
   <!-- ================= VIEW: SPF BUILDER ================= -->
   <main id="view-spf" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
-      <form id="spf-form" class="min-w-0 space-y-8 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
+      <form id="spf-form" class="min-w-0 space-y-8 rounded-2xl bg-surface p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
         <div>
           <label for="spf-domain" class="semi-wide block text-lg font-semibold text-navy">Your domain</label>
           <p class="mt-1 text-sm text-ink/70">Used to count lookups for <span class="font-mono">a</span> and <span class="font-mono">mx</span>. Leave blank if you only want the record text.</p>
@@ -293,11 +327,11 @@
           <legend class="semi-wide text-lg font-semibold text-navy">Your own servers</legend>
           <div class="mt-4 grid gap-2 sm:grid-cols-2">
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input id="spf-a" type="checkbox" class="mt-1 accent-[#1679A8]" />
+              <input id="spf-a" type="checkbox" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">The website’s server</span><span class="block text-xs text-ink/60">Adds <span class="font-mono">a</span>: the IPs in the domain’s A record. 1 lookup.</span></span>
             </label>
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input id="spf-mx" type="checkbox" class="mt-1 accent-[#1679A8]" />
+              <input id="spf-mx" type="checkbox" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">The mail (MX) servers</span><span class="block text-xs text-ink/60">Adds <span class="font-mono">mx</span>. 1 lookup.</span></span>
             </label>
           </div>
@@ -314,15 +348,15 @@
           <legend class="semi-wide text-lg font-semibold text-navy">Mail from anywhere else</legend>
           <div class="mt-4 grid gap-2">
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="spf-all" value="~" checked class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="spf-all" value="~" checked class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Soft fail <span class="font-mono font-normal">~all</span></span><span class="block text-sm text-ink/70">Mark it as suspicious. The safe choice while you confirm every sender is listed.</span></span>
             </label>
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="spf-all" value="-" class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="spf-all" value="-" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Fail <span class="font-mono font-normal">-all</span></span><span class="block text-sm text-ink/70">Tell receivers to reject it. Use once you’re sure nothing legitimate is missing.</span></span>
             </label>
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="spf-all" value="?" class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="spf-all" value="?" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Neutral <span class="font-mono font-normal">?all</span></span><span class="block text-sm text-ink/70">No opinion. Gives almost no protection.</span></span>
             </label>
           </div>
@@ -330,11 +364,11 @@
       </form>
 
       <aside class="lg:sticky lg:top-6" aria-live="polite">
-        <div class="rounded-lg bg-navy p-6 text-white">
+        <div class="rounded-lg bg-band p-6 text-white">
           <h2 class="semi-wide text-lg font-semibold">Your SPF record</h2>
           <div class="relative mt-4 rounded-lg bg-white/10">
             <pre id="spf-output" class="whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed"></pre>
-            <button type="button" id="spf-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-navy hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
+            <button type="button" id="spf-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-band hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
           </div>
           <div class="mt-5">
             <div class="mb-1.5 flex justify-between text-[13px]">
@@ -355,7 +389,7 @@
   <!-- ================= VIEW: DMARC BUILDER ================= -->
   <main id="view-dmarc" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
     <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
-      <form id="dmarc-form" class="min-w-0 space-y-8 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
+      <form id="dmarc-form" class="min-w-0 space-y-8 rounded-2xl bg-surface p-6 shadow-[0_1px_2px_rgba(38,34,98,.06),0_8px_24px_rgba(38,34,98,.08)] sm:p-8" autocomplete="off">
         <div>
           <label for="dmarc-domain" class="semi-wide block text-lg font-semibold text-navy">Your domain</label>
           <input id="dmarc-domain" type="text" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="example.com"
@@ -366,21 +400,21 @@
           <legend class="semi-wide text-lg font-semibold text-navy">What happens to mail that fails</legend>
           <div class="mt-4 grid gap-2">
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="dmarc-p" value="none" checked class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="dmarc-p" value="none" checked class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Monitor only <span class="font-mono font-normal">p=none</span></span><span class="block text-sm text-ink/70">Deliver it as usual and send you reports. Start here.</span></span>
             </label>
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="dmarc-p" value="quarantine" class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="dmarc-p" value="quarantine" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Send to spam <span class="font-mono font-normal">p=quarantine</span></span><span class="block text-sm text-ink/70">Failing mail lands in the junk folder.</span></span>
             </label>
             <label class="choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3">
-              <input type="radio" name="dmarc-p" value="reject" class="mt-1 accent-[#1679A8]" />
+              <input type="radio" name="dmarc-p" value="reject" class="mt-1 accent-blue" />
               <span><span class="font-semibold text-navy">Reject <span class="font-mono font-normal">p=reject</span></span><span class="block text-sm text-ink/70">Failing mail is refused outright. Full spoofing protection.</span></span>
             </label>
           </div>
           <div id="dmarc-pct-wrap" class="mt-4 hidden">
             <label for="dmarc-pct" class="font-semibold text-navy">Apply to <span id="dmarc-pct-value" class="tabular">100</span>% of failing mail</label>
-            <input id="dmarc-pct" type="range" min="5" max="100" step="5" value="100" class="mt-2 w-full accent-[#1679A8]" />
+            <input id="dmarc-pct" type="range" min="5" max="100" step="5" value="100" class="mt-2 w-full accent-blue" />
             <p class="text-sm text-ink/70">Lower it to phase in a stricter policy gradually. The rest is treated one level softer.</p>
           </div>
         </fieldset>
@@ -388,7 +422,7 @@
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
             <label for="dmarc-sp" class="font-semibold text-navy">Subdomains</label>
-            <select id="dmarc-sp" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+            <select id="dmarc-sp" class="mt-2 w-full rounded-lg border border-rule bg-surface px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
               <option value="">Same as the domain</option>
               <option value="none">Monitor only</option>
               <option value="quarantine">Send to spam</option>
@@ -397,7 +431,7 @@
           </div>
           <div>
             <label for="dmarc-fo" class="font-semibold text-navy">Failure reports</label>
-            <select id="dmarc-fo" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+            <select id="dmarc-fo" class="mt-2 w-full rounded-lg border border-rule bg-surface px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
               <option value="">When SPF and DKIM both fail (default)</option>
               <option value="1">When either SPF or DKIM fails</option>
             </select>
@@ -417,14 +451,14 @@
         <div class="grid gap-5 sm:grid-cols-2">
           <div>
             <label for="dmarc-adkim" class="font-semibold text-navy">DKIM alignment</label>
-            <select id="dmarc-adkim" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+            <select id="dmarc-adkim" class="mt-2 w-full rounded-lg border border-rule bg-surface px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
               <option value="r">Relaxed: subdomains count</option>
               <option value="s">Strict: exact domain only</option>
             </select>
           </div>
           <div>
             <label for="dmarc-aspf" class="font-semibold text-navy">SPF alignment</label>
-            <select id="dmarc-aspf" class="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
+            <select id="dmarc-aspf" class="mt-2 w-full rounded-lg border border-rule bg-surface px-3 py-2.5 text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20">
               <option value="r">Relaxed: subdomains count</option>
               <option value="s">Strict: exact domain only</option>
             </select>
@@ -433,11 +467,11 @@
       </form>
 
       <aside class="lg:sticky lg:top-6" aria-live="polite">
-        <div class="rounded-lg bg-navy p-6 text-white">
+        <div class="rounded-lg bg-band p-6 text-white">
           <h2 class="semi-wide text-lg font-semibold">Your DMARC record</h2>
           <div class="relative mt-4 rounded-lg bg-white/10">
             <pre id="dmarc-output" class="whitespace-pre-wrap break-anywhere p-3 pr-16 font-mono text-[13px] leading-relaxed"></pre>
-            <button type="button" id="dmarc-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-navy hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
+            <button type="button" id="dmarc-copy" class="absolute right-2 top-2 rounded-md bg-sky px-2.5 py-1 text-xs font-bold text-band hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white">Copy</button>
           </div>
           <ul id="dmarc-findings" class="mt-4 space-y-2 text-[13px]"></ul>
           <h3 class="mt-6 text-sm font-semibold text-sky">Add it to your DNS</h3>
@@ -451,8 +485,8 @@
 
   <!-- ================= VIEW: EMAIL TEST ================= -->
   <main id="view-mailtest" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <div id="mt-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
-    <article id="mt-sheet" class="overflow-hidden rounded-lg border border-rule bg-white" aria-live="polite">
+    <div id="mt-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-surface p-5 text-fail"></div>
+    <article id="mt-sheet" class="overflow-hidden rounded-lg border border-rule bg-surface" aria-live="polite">
       <div class="grid gap-x-10 gap-y-4 px-6 py-8 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]">
         <h2 class="text-[17px] font-semibold text-navy">How it works</h2>
         <div class="space-y-4 text-[15px] leading-relaxed">
@@ -470,8 +504,8 @@
 
   <!-- ================= VIEW: WORLD VIEW ================= -->
   <main id="view-world" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <div id="world-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-white p-5 text-fail"></div>
-    <article class="overflow-hidden rounded-lg border border-rule bg-white">
+    <div id="world-error" role="alert" class="mb-4 hidden rounded-lg border border-fail/40 bg-surface p-5 text-fail"></div>
+    <article class="overflow-hidden rounded-lg border border-rule bg-surface">
       <div class="px-6 pb-2 pt-7 sm:px-10">
         <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
           <h2 id="world-title" class="text-[17px] font-semibold text-navy">12 places to look from</h2>
@@ -483,7 +517,7 @@
       <div id="world-grid" class="grid border-t border-rule sm:grid-cols-2 lg:grid-cols-3"></div>
       <p class="border-t border-rule px-6 py-5 text-[13px] leading-snug text-ink/60 sm:px-10">The coloured marks come from one request to the home page from a test machine in each country (Globalping), refreshed every 10 minutes. An answer of HTTP 200 means the server responded, not that the page looks right: open a place to see it. Opening a place uses a real browser that reaches the internet through an address in that country (Browserless’s proxies); the exact city can vary. Opened views are kept for 6 hours, and new ones are limited each day because every page load is paid for by the megabyte.</p>
     </article>
-    <dialog id="world-dialog" class="w-[min(1100px,94vw)] rounded-lg border border-rule bg-white p-0 backdrop:bg-navy/60">
+    <dialog id="world-dialog" class="w-[min(1100px,94vw)] rounded-lg border border-rule bg-surface p-0 backdrop:bg-band/70">
       <div class="flex items-center justify-between gap-4 border-b border-rule px-4 py-2.5">
         <p id="world-dialog-title" class="min-w-0 truncate text-[14px] font-semibold text-navy"></p>
         <button id="world-dialog-close" type="button" class="rounded-md px-2 py-1 text-[13px] font-semibold text-blue hover:bg-sky/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Close</button>
@@ -494,7 +528,7 @@
 
   <!-- ================= VIEW: IP LOOKUP ================= -->
   <main id="view-ip" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <article class="divide-y divide-rule overflow-hidden rounded-lg border border-rule bg-white">
+    <article class="divide-y divide-rule overflow-hidden rounded-lg border border-rule bg-surface">
       <div id="ip-result" aria-live="polite"></div>
       <div id="myip-box"></div>
     </article>
@@ -502,7 +536,7 @@
 
   <!-- ================= VIEW: SPEED TEST ================= -->
   <main id="view-speed" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <article class="overflow-hidden rounded-lg border border-rule bg-white">
+    <article class="overflow-hidden rounded-lg border border-rule bg-surface">
       <div class="grid gap-x-10 gap-y-6 px-6 py-8 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]">
         <div>
           <h2 class="text-[17px] font-semibold text-navy">Your speed</h2>
@@ -510,14 +544,14 @@
         </div>
         <div class="@container min-w-0 space-y-6">
           <div class="grid grid-cols-2 gap-6">
-            <div><div class="text-[13px] text-ink/60">Download</div><div class="mt-1 font-mono text-4xl font-semibold tabular-nums text-navy sm:text-5xl"><span id="sp-down">–</span> <span class="text-base font-normal text-ink/60">Mbps</span></div></div>
-            <div><div class="text-[13px] text-ink/60">Upload</div><div class="mt-1 font-mono text-4xl font-semibold tabular-nums text-navy sm:text-5xl"><span id="sp-up">–</span> <span class="text-base font-normal text-ink/60">Mbps</span></div></div>
+            <div><div class="text-[13px] text-ink/60">Download</div><div class="mt-1 flex items-baseline gap-1.5"><span id="sp-down" class="display tabular text-4xl font-semibold text-navy sm:text-5xl">–</span><span class="text-[15px] text-ink/60">Mbps</span></div></div>
+            <div><div class="text-[13px] text-ink/60">Upload</div><div class="mt-1 flex items-baseline gap-1.5"><span id="sp-up" class="display tabular text-4xl font-semibold text-navy sm:text-5xl">–</span><span class="text-[15px] text-ink/60">Mbps</span></div></div>
           </div>
           <div id="sp-rows" class="text-[14px]"></div>
           <div id="sp-uses" class="text-[14px]"></div>
           <div class="flex flex-wrap items-center gap-3">
             <button id="sp-start" type="button" class="slice">Start test</button>
-            <button id="sp-stop" type="button" hidden class="rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Stop</button>
+            <button id="sp-stop" type="button" hidden class="rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Stop</button>
           </div>
           <p class="max-w-3xl text-[13px] leading-snug text-ink/60">On a fast connection the test can download a few hundred megabytes, so avoid it on a capped mobile plan. It measures the path to Cloudflare, not to any one website, and Wi-Fi, VPNs and other devices using the connection all lower the result. It runs Cloudflare’s open-source speed test, and Cloudflare receives the anonymous results.</p>
         </div>
@@ -527,7 +561,7 @@
 
   <!-- ================= VIEW: EMAIL HEADER ANALYZER ================= -->
   <main id="view-headers" hidden class="mx-auto -mt-16 max-w-5xl px-4 pb-16 sm:px-6">
-    <article class="overflow-hidden rounded-lg border border-rule bg-white">
+    <article class="overflow-hidden rounded-lg border border-rule bg-surface">
       <form id="hdr-form" class="space-y-3 p-6 sm:p-8" autocomplete="off">
         <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <label for="hdr-input" class="semi-wide text-lg font-semibold text-navy">Headers or bounce message</label>
@@ -545,9 +579,9 @@
         <textarea id="hdr-input" rows="10" spellcheck="false" maxlength="400000" placeholder="Received: from mail.example.com (mail.example.com [203.0.113.5]) by mx.example.net …"
                   class="w-full rounded-lg border border-rule px-3 py-2.5 font-mono text-[13px] leading-relaxed text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20"></textarea>
         <div class="flex flex-wrap items-center gap-3">
-          <button type="submit" class="rounded-lg bg-navy px-6 py-2.5 font-bold text-white hover:bg-blue focus:outline-none focus-visible:ring-4 focus-visible:ring-sky/50">Analyze headers</button>
-          <button type="button" id="hdr-sample" class="rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample headers</button>
-          <button type="button" id="hdr-sample-bounce" class="rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample bounce</button>
+          <button type="submit" class="slice">Analyze headers</button>
+          <button type="button" id="hdr-sample" class="rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample headers</button>
+          <button type="button" id="hdr-sample-bounce" class="rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Sample bounce</button>
           <button type="button" id="hdr-clear" class="text-sm text-ink/60 underline underline-offset-4 hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky">Clear</button>
           <span class="text-[13px] text-ink/60">For a bounce, paste the whole message you got back.</span>
         </div>
@@ -557,8 +591,31 @@
     </article>
   </main>
 
-  <footer class="mx-auto max-w-5xl px-4 pb-10 text-sm text-ink/60 sm:px-6">
-    VdigDNS is open source. To see how it’s used, each check is logged with the domain or IP checked, your IP address, approximate location and browser, and deleted after 30 days. Headers and bounces you paste are read in your browser and never sent anywhere. The IP lookup shows your IP using ipify and checks addresses with AbuseIPDB and the Tor Project’s exit list; the speed test runs against Cloudflare. World view’s status checks run on Globalping’s free test machines, and its visits from other countries, like website screenshots, are taken by Browserless; email tests are kept for one hour and scored with Postmark’s SpamAssassin service.
+  <footer class="mx-auto max-w-5xl px-4 pb-12 text-[13px] leading-relaxed text-ink/65 sm:px-6">
+    <div class="grid gap-8 border-t border-rule pt-8 sm:grid-cols-[1fr_1fr_1fr]">
+      <div>
+        <p class="wordmark text-[15px] text-navy">Vdig<span class="text-sky">DNS</span><span class="text-orange">.</span></p>
+        <p class="mt-2">Free, open-source checks for domains, DNS, email and websites.</p>
+      </div>
+      <div>
+        <h2 class="text-[13px] font-semibold text-navy">What’s logged</h2>
+        <ul class="mt-2 space-y-1">
+          <li>Each check: what was checked, your IP address, approximate location and browser. Deleted after 30 days.</li>
+          <li>Headers and bounces you paste stay in your browser.</li>
+          <li>Email tests are kept for one hour.</li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="text-[13px] font-semibold text-navy">Services used</h2>
+        <ul class="mt-2 space-y-1">
+          <li>Browserless: screenshots and World view visits</li>
+          <li>Globalping: World view status checks</li>
+          <li>Postmark: email spam score</li>
+          <li>AbuseIPDB, Tor Project, ipify: IP lookup</li>
+          <li>Cloudflare: speed test</li>
+        </ul>
+      </div>
+    </div>
   </footer>
 
 <script>
@@ -665,14 +722,14 @@ function subheading(text) { return el("h4", "text-[13px] font-semibold text-navy
 
 /** Secondary action button inside a report section (e.g. "Edit in SPF builder"). */
 function actionButton(label, onClick) {
-  const b = el("button", "rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", label);
+  const b = el("button", "rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", label);
   b.type = "button";
   b.addEventListener("click", onClick);
   return b;
 }
 
 function section(id, title, status, verdict) {
-  const wrap = el("section", "grid min-w-0 scroll-mt-6 gap-x-10 gap-y-4 px-6 py-7 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]");
+  const wrap = el("section", "grid min-w-0 scroll-mt-16 gap-x-10 gap-y-4 px-6 py-7 sm:px-10 lg:grid-cols-[12.5rem_minmax(0,1fr)]");
   wrap.id = id;
   wrap.dataset.status = status;
   const head = el("div", "min-w-0");
@@ -698,6 +755,22 @@ function fullRow(sectionEl) { return add(el("div", "border-t border-rule"), sect
    ===================================================================== */
 const SEVERITY = ["pass", "info", "warn", "fail", "error"];
 const worstStatus = (...statuses) => statuses.filter(Boolean).reduce((a, b) => (SEVERITY.indexOf(b) > SEVERITY.indexOf(a) ? b : a), "pass");
+/** "11 Dec 2026 (in 37 days)", with the exact UTC time on hover. */
+function whenNode(iso) {
+  if (!iso) return el("span", "", "Not published");
+  const d = new Date(iso), days = Math.round((d - Date.now()) / 86400000);
+  const rel = days === 0 ? "today" : days > 0 ? `in ${days} day${days === 1 ? "" : "s"}` : `${-days} day${days === -1 ? "" : "s"} ago`;
+  const span = el("span", "", `${fmtDate(iso)} `);
+  span.append(el("span", "text-ink/55", `(${rel})`));
+  span.title = d.toUTCString();
+  return span;
+}
+/** A URL that wraps only after / . ? & = (never mid-word). */
+function urlNode(url, cls = "") {
+  const span = el("span", `font-mono ${cls}`);
+  String(url || "").split(/(?<=[\/.?&=])/).forEach((part, i) => { if (i) span.append(document.createElement("wbr")); span.append(part); });
+  return span;
+}
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "Not published";
 function verdictWeb(w) {
   if (!w || w.status === "error") return "Couldn't be checked";
@@ -788,7 +861,7 @@ function renderRail(data, pending = false) {
   entries.forEach(({ name, target, status, verdict }) => {
     const a = el("a", "grid grid-cols-[4.75rem_1.1rem_minmax(0,1fr)] items-baseline gap-x-1.5 border-b border-rule py-2 text-[14px] hover:bg-canvas/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
     a.href = `#${target}`;
-    a.addEventListener("click", (e) => { e.preventDefault(); $(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
+    a.addEventListener("click", (e) => { e.preventDefault(); openSection(target)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
     const g = el("span", `mark-glyph text-[13px] font-bold ${st(status).text} ${status === "pending" ? "animate-pulse" : ""}`, st(status).glyph);
     g.setAttribute("aria-label", st(status).word);
     add(a, el("span", "font-semibold text-navy", name), g,
@@ -1080,7 +1153,7 @@ function renderDKIM(k, domain) {
   label.htmlFor = "dkim-selector";
   const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
   Object.assign(input, { id: "dkim-selector", type: "text", placeholder: "selector, e.g. selector1", spellcheck: false, required: true, maxLength: 63 });
-  const btn = el("button", "rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check selector");
+  const btn = el("button", "rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check selector");
   btn.type = "submit";
   const out = el("div", "text-[14px]");
   form.addEventListener("submit", async (e) => {
@@ -1168,8 +1241,8 @@ function renderTLS(t) {
       row("Trusted", t.verified ? "Yes, chain and hostname are valid" : `No: ${t.verify_error}`),
       row("Issued to", t.subject_cn, true),
       row("Issued by", [t.issuer_org, t.issuer_cn].filter(Boolean).join(", ") || t.issuer),
-      row("Valid from", new Date(t.not_before).toUTCString()),
-      row("Expires", new Date(t.not_after).toUTCString()),
+      row("Valid from", whenNode(t.not_before)),
+      row("Expires", whenNode(t.not_after)),
       row("Connection", `${t.tls_version}, ${t.cipher}`, true),
       row("Tested on", `${t.ip}:443`, true));
   }
@@ -1194,9 +1267,76 @@ const BENTO = [
     tiles: [["spf"], ["dmarc"], ["dkim"], ["mail"], ["blocklists"], ["mail_security"]] },
 ];
 function paintTile() { /* sections carry their own status mark now */ }
+
+/* ---- Quiet sections: a section where everything passed shrinks to its heading and verdict.
+   Problems stay open. The website section stays open (its picture and stack are the overview). ---- */
+const openedByVisitor = new Set();
+function setCollapsed(sec, collapsed) {
+  const body = sec.lastElementChild, btn = sec.querySelector(".sec-toggle");
+  if (!body || !btn) return;
+  body.hidden = collapsed;
+  sec.dataset.collapsed = collapsed ? "1" : "";
+  btn.textContent = collapsed ? "Show details" : "Hide details";
+  btn.setAttribute("aria-expanded", String(!collapsed));
+}
+function collapseIfQuiet(node) {
+  const sec = node?.matches?.("section[data-status]") ? node : node?.querySelector?.("section[data-status]");
+  if (!sec || sec.id === "sec-web" || sec.id === "sec-attention" || !["pass", "info"].includes(sec.dataset.status)) return node;
+  const head = sec.firstElementChild;
+  const btn = el("button", "sec-toggle mt-2 text-[13px] font-medium text-blue underline decoration-rule underline-offset-4 hover:decoration-sky focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+  btn.type = "button";
+  btn.setAttribute("aria-controls", sec.id);
+  btn.addEventListener("click", () => {
+    const open = sec.dataset.collapsed === "1";
+    setCollapsed(sec, !open);
+    if (open) openedByVisitor.add(sec.id); else openedByVisitor.delete(sec.id);
+  });
+  head.append(btn);
+  sec.classList.add("lg:items-start");
+  setCollapsed(sec, !openedByVisitor.has(sec.id));
+  return node;
+}
+function openSection(id) {
+  const sec = $(id);
+  if (sec?.dataset.collapsed === "1") { setCollapsed(sec, false); openedByVisitor.add(id); }
+  return sec;
+}
+
+/* ---- Jump bar: every section with its mark, pinned while you scroll the report ---- */
+const JUMP = [["website", "sec-web", "Website"], ["tls", "sec-tls", "SSL"], ["registration", "sec-reg", "Domain"],
+  ["nameservers", "sec-ns", "Nameservers"], ["dns", "sec-dns", "DNS"], ["spf", "sec-spf", "SPF"], ["dmarc", "sec-dmarc", "DMARC"],
+  ["dkim", "sec-dkim", "DKIM"], ["mail", "sec-mail", "Mail"], ["blocklists", "sec-bl", "Blocklists"], ["mail_security", "sec-mailsec", "MTA-STS"]];
+function jumpBar(data) {
+  const bar = el("nav", "sticky top-0 z-30 -mx-4 mb-4 border-b border-rule bg-canvas/90 px-4 py-2 backdrop-blur sm:-mx-6 sm:px-6");
+  bar.setAttribute("aria-label", "Jump to a section");
+  bar.classList.add("flex", "items-center", "gap-2");
+  const list = el("ul", "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden");
+  JUMP.forEach(([key, id, name]) => {
+    const status = data[key]?.status || "error";
+    const a = el("a", "inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-[13px] text-ink/80 hover:bg-surface hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky");
+    a.href = `#${id}`;
+    const g = el("span", `mark-glyph text-[12px] font-bold ${st(status).text}`, st(status).glyph);
+    g.setAttribute("aria-label", st(status).word);
+    add(a, g, el("span", "", name));
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      openSection(id)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    });
+    add(list, add(el("li", ""), a));
+  });
+  const all = el("button", "shrink-0 whitespace-nowrap rounded-md border border-rule bg-surface px-2.5 py-1.5 text-[13px] font-medium text-blue hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Expand all");
+  all.type = "button";
+  all.addEventListener("click", () => {
+    const secs = [...document.querySelectorAll("#sections section[data-collapsed]")].filter((x) => x.querySelector(".sec-toggle"));
+    const expand = secs.some((x) => x.dataset.collapsed === "1");
+    secs.forEach((x) => { setCollapsed(x, !expand); if (expand) openedByVisitor.add(x.id); else openedByVisitor.delete(x.id); });
+    all.textContent = expand ? "Collapse passing" : "Expand all";
+  });
+  return add(bar, list, all);
+}
 /** Build the report document. fill(key) returns each section; groupStatus(keys) the group's mark (or null). */
 function bentoLayout(fill, groupStatus = () => null, attention = null) {
-  const sheet = el("div", "overflow-hidden rounded-lg border border-rule bg-white");
+  const sheet = el("div", "overflow-hidden rounded-lg border border-rule bg-surface");
   if (attention) add(sheet, attention);
   BENTO.forEach((g, i) => {
     const status = groupStatus(g.tiles.map(([k]) => k));
@@ -1229,9 +1369,10 @@ function renderReport(data) {
   $("report").classList.remove("hidden");
   renderHero(data);
   $("sections").replaceChildren(bentoLayout(
-    (key) => FINAL_RENDER[key](data),
+    (key) => collapseIfQuiet(FINAL_RENDER[key](data)),
     (keys) => worstStatus(...keys.map((k) => data[k]?.status || "error")),
     renderAttention(data)));
+  $("sections").prepend(jumpBar(data));
 }
 
 /* ---- What needs attention: every problem across the report, worst first ---- */
@@ -1269,7 +1410,7 @@ function renderAttention(data) {
     g.setAttribute("aria-label", item.level === "fail" ? "Problem" : "Warning");
     const link = el("a", "font-semibold text-navy underline decoration-rule underline-offset-4 hover:text-blue hover:decoration-sky", item.name);
     link.href = `#${item.target}`;
-    link.addEventListener("click", (e) => { e.preventDefault(); $(item.target)?.scrollIntoView({ behavior: "smooth" }); });
+    link.addEventListener("click", (e) => { e.preventDefault(); openSection(item.target)?.scrollIntoView({ behavior: "smooth" }); });
     add(list, add(li, g, add(el("p", "min-w-0 break-anywhere text-[14px] leading-snug"), link, el("span", "text-ink/85", ` ${item.text}`))));
   });
   add(body, list);
@@ -1310,7 +1451,7 @@ function renderWebsite(w, domain) {
   add(left,
     row("Status", `${w.status_code} ${w.reason || ""}`.trim()),
     row("First response", `${w.response_ms} ms, ${speedWord(w.response_ms)}`),
-    row("Final address", w.final_url, true),
+    row("Final address", urlNode(w.final_url, "text-[13px]")),
     row("http:// to https://", w.https_redirect === true ? "Redirects" : w.https_redirect === false ? "Doesn’t redirect" : "Port 80 closed (nothing to redirect)"),
     w.http2 != null ? row("HTTP/2", w.http2 ? "Supported" : "Not supported") : null,
     row("Compression", w.compression ? w.compression : "None"),
@@ -1321,7 +1462,7 @@ function renderWebsite(w, domain) {
     const ol = el("ol", "space-y-1.5");
     w.hops.forEach((h) => add(ol, add(el("li", "grid grid-cols-[3rem_1fr] gap-3 text-[13px]"),
       el("span", `tabular font-mono font-semibold ${h.status >= 400 ? "text-fail" : h.status >= 300 ? "text-blue" : "text-pass"}`, h.status),
-      el("span", "break-anywhere font-mono text-ink/80", h.url))));
+      urlNode(h.url, "min-w-0 text-ink/80"))));
     add(left, add(el("div", "mt-5 space-y-2"), subheading(`Redirect path (${w.hops.length - 1} redirect${w.hops.length === 2 ? "" : "s"})`), ol));
   }
 
@@ -1578,15 +1719,28 @@ function verdictBlocklists(b) {
   if (domainHit) parts.push("the domain is listed");
   return parts.join(", ");
 }
+/** Listings stand out; lists that couldn't be checked are named quietly; the clean ones share one line. */
 function listChips(lists) {
-  const chips = el("div", "flex flex-wrap gap-1.5");
-  lists.forEach((l) => {
-    const [cls, word] = LIST_STATE[l.state] || LIST_STATE.unavailable;
-    const chip = el(l.state === "listed" ? "a" : "span", `rounded-md border px-2 py-0.5 text-[13px] ${cls}`, `${l.list}: ${word}`);
-    if (l.state === "listed") { chip.href = l.url; chip.target = "_blank"; chip.rel = "noopener"; chip.title = "Open this list's website to look up the reason and request removal"; chip.classList.add("underline", "underline-offset-2"); }
-    add(chips, chip);
-  });
-  return chips;
+  const wrap = el("div", "space-y-2");
+  const loud = lists.filter((l) => l.state !== "clean");
+  const clean = lists.filter((l) => l.state === "clean").map((l) => l.list);
+  if (loud.length) {
+    const chips = el("div", "flex flex-wrap gap-1.5");
+    loud.forEach((l) => {
+      const [cls, word] = LIST_STATE[l.state] || LIST_STATE.unavailable;
+      const chip = el(l.state === "listed" ? "a" : "span", `rounded-md border px-2 py-0.5 text-[13px] ${cls}`, `${l.list}: ${word}`);
+      if (l.state === "listed") { chip.href = l.url; chip.target = "_blank"; chip.rel = "noopener"; chip.title = "Open this list's website to look up the reason and request removal"; chip.classList.add("underline", "underline-offset-2"); }
+      add(chips, chip);
+    });
+    add(wrap, chips);
+  }
+  if (clean.length) {
+    const g = el("span", "mark-glyph pt-px text-[12px] font-bold text-pass", "✓");
+    g.setAttribute("aria-hidden", "true");
+    add(wrap, add(el("p", "grid grid-cols-[1.1rem_minmax(0,1fr)] gap-1 text-[13px] text-ink/65"), g,
+      el("span", "", `${loud.length ? "Not listed on the other " + clean.length + ": " : "Not listed on "}${listFormat(clean)}`)));
+  }
+  return wrap;
 }
 function listReasons(lists) {
   const why = lists.filter((l) => l.state === "listed" && l.reason);
@@ -1601,7 +1755,7 @@ function blocklistRows(ips) {
   return wrap;
 }
 function spamhausLink(url) {
-  const a = el("a", "inline-flex rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check Spamhaus by hand");
+  const a = el("a", "inline-flex rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check Spamhaus by hand");
   a.href = url || "https://check.spamhaus.org/"; a.target = "_blank"; a.rel = "noopener";
   return a;
 }
@@ -1636,7 +1790,7 @@ function renderBlocklists(b) {
   label.htmlFor = "bl-ip";
   const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
   Object.assign(input, { id: "bl-ip", type: "text", placeholder: "IPv4 address, e.g. a server that sends your mail", spellcheck: false, required: true, maxLength: 45, inputMode: "decimal" });
-  const btn = el("button", "rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check IP");
+  const btn = el("button", "rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check IP");
   btn.type = "submit";
   const out = el("div");
   form.addEventListener("submit", (e) => { e.preventDefault(); if (input.value.trim()) checkOneIp(input.value.trim(), out); });
@@ -1808,7 +1962,7 @@ function renderPropagation(p) {
   function paint() {
     filterBar.querySelectorAll("button").forEach((b) => {
       const on = b.dataset.key === show;
-      b.className = `rounded-md border px-2.5 py-1 text-[13px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky ${on ? "border-navy bg-navy text-white" : "border-rule bg-white text-ink/70 hover:border-sky"}`;
+      b.className = `rounded-md border px-2.5 py-1 text-[13px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky ${on ? "border-ink bg-ink text-surface" : "border-rule bg-surface text-ink/70 hover:border-sky"}`;
       b.setAttribute("aria-pressed", String(on));
     });
     const blocks = [];
@@ -1932,7 +2086,7 @@ function buildProviderChoices() {
   const box = $("spf-providers");
   SPF_PROVIDERS.forEach(([name, inc], i) => {
     const label = el("label", "choice flex cursor-pointer items-start gap-3 rounded-lg border border-rule p-3");
-    const cb = el("input", "mt-1 accent-[#1679A8]");
+    const cb = el("input", "mt-1 accent-blue");
     Object.assign(cb, { type: "checkbox", id: `spf-prov-${i}`, value: inc });
     cb.dataset.include = inc;
     add(label, cb, add(el("span", "min-w-0"), el("span", "block font-semibold text-navy", name), el("span", "block break-anywhere font-mono text-xs text-ink/60", `include:${inc}`)));
@@ -2856,7 +3010,7 @@ function renderBounceAnalysis(b) {
       const input = el("input", "min-w-0 flex-1 rounded-lg border border-rule px-3 py-2 font-mono text-sm text-navy outline-none focus:border-sky focus:ring-4 focus:ring-sky/20");
       Object.assign(input, { type: "text", placeholder: "Your sending server’s IP", spellcheck: false, maxLength: 45, inputMode: "decimal" });
       input.setAttribute("aria-label", "Your sending server's IP address");
-      const btn = el("button", "rounded-md border border-rule bg-white px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check on blocklists");
+      const btn = el("button", "rounded-md border border-rule bg-surface px-3 py-1.5 text-[13px] font-medium text-blue hover:border-sky hover:text-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-sky", "Check on blocklists");
       btn.type = "submit";
       form.addEventListener("submit", (e) => { e.preventDefault(); if (input.value.trim()) checkOneIp(input.value.trim(), toolOut); });
       add(actions, add(form, input, btn));
@@ -3186,13 +3340,13 @@ function drawWorldMap() {
   const grid = svgEl("g", { stroke: "currentColor", "stroke-width": "1", class: "text-rule", fill: "none" });
   for (let lat = -40; lat <= 60; lat += 20) grid.append(svgEl("line", { x1: 0, x2: MAP.w, y1: mapY(lat), y2: mapY(lat), "stroke-dasharray": "2 5" }));
   for (let lon = -150; lon <= 150; lon += 30) grid.append(svgEl("line", { y1: 0, y2: MAP.h, x1: mapX(lon), x2: mapX(lon), "stroke-dasharray": "2 5" }));
-  const land = svgEl("path", { d: "", class: "fill-[#E7E9F0]", "fill-rule": "evenodd" });
+  const land = svgEl("path", { d: "", class: "fill-land", "fill-rule": "evenodd" });
   const pins = svgEl("g");
   svg.append(grid, land, pins);
   WORLD_LOCATIONS.forEach((loc) => {
     const g = svgEl("g", { transform: `translate(${mapX(loc.lon).toFixed(1)},${mapY(loc.lat).toFixed(1)})`, class: "world-pin cursor-pointer", "data-id": loc.id });
     const halo = svgEl("circle", { r: 10, class: "world-halo fill-sky/0" });
-    const dot = svgEl("circle", { r: 6.5, class: "world-dot fill-ink/35 stroke-white", "stroke-width": 2.5 });
+    const dot = svgEl("circle", { r: 6.5, class: "world-dot fill-ink/35 stroke-surface", "stroke-width": 2.5 });
     const label = svgEl("text", { x: 11, y: 4, class: "fill-ink/70 text-[15px] font-medium" });
     label.textContent = loc.city;
     if (["gb", "es", "sg", "us"].includes(loc.id)) { label.setAttribute("x", -11); label.setAttribute("text-anchor", "end"); }
@@ -3601,6 +3755,29 @@ function stopSpeedTest() {
 }
 
 /* =====================================================================
+   THEME: follows the device until the visitor picks one; the choice is remembered
+   ===================================================================== */
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : darkQuery.matches;
+const MOON = "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z";
+const SUN = "M12 4V2M12 22v-2M4.9 4.9 3.5 3.5M20.5 20.5l-1.4-1.4M4 12H2M22 12h-2M4.9 19.1l-1.4 1.4M20.5 3.5l-1.4 1.4M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z";
+function syncThemeButton() {
+  const dark = isDark();
+  $("theme-icon").setAttribute("d", dark ? SUN : MOON);
+  $("theme-label").textContent = dark ? "Light" : "Dark";
+  $("theme-btn").setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  document.querySelector('meta[name="theme-color"]').content = dark ? "#1B1A45" : "#262262";
+}
+$("theme-btn").addEventListener("click", () => {
+  const next = isDark() ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("vdig-theme", next); } catch { /* not remembered, still switched */ }
+  syncThemeButton();
+});
+darkQuery.addEventListener?.("change", syncThemeButton);
+syncThemeButton();
+
+/* =====================================================================
    VIEWS (tabs) — #spf-builder and #dmarc-builder are shareable links
    ===================================================================== */
 const VIEWS = { report: "", prop: "#propagation", spf: "#spf-builder", dmarc: "#dmarc-builder", headers: "#header-analyzer", mailtest: "#email-test", ip: "#ip", speed: "#speed-test", world: "#world" };
@@ -3915,7 +4092,7 @@ function fillSlot(key, data) {
   const target = $(`slot-${key}`);
   const render = SLOTS.find(([k]) => k === key)?.[1];
   if (!target || !render || target.dataset.filled) return;
-  try { target.replaceChildren(render(data)); target.dataset.filled = "1"; paintTile(target); }
+  try { target.replaceChildren(collapseIfQuiet(render(data))); target.dataset.filled = "1"; paintTile(target); }
   catch { /* needs data that only the final report has; it fills in then */ }
 }
 /** Read newline-delimited JSON from a streaming response, calling onEvent for each line. */
