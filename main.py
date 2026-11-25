@@ -163,6 +163,10 @@ SCREENSHOT_PER_DAY = int(_env_float("SCREENSHOT_PER_DAY", 30))  # new screenshot
 GEO_PROXY = os.getenv("GEO_PROXY", "datacenter").strip().lower()    # "datacenter" (cheaper) or "residential" (more countries)
 GEO_PER_DAY = int(_env_float("GEO_PER_DAY", 2))                      # NEW location loads per day, all visitors (cached ones are free)
 GEO_PER_VISITOR_DAY = 6
+# Quick status from every location: Globalping's free probes (250 tests an hour, or 500 with a free token).
+GLOBALPING_URL = "https://api.globalping.io/v1/measurements"
+GLOBALPING_TOKEN = os.getenv("GLOBALPING_TOKEN", "")
+GEO_STATUS_PER_VISITOR_DAY = 40
 
 
 # =============================================================================
@@ -3337,13 +3341,7 @@ GEO_FUNCTION = r"""
 export default async ({ page, context }) => {
   const out = { exit_ip: null, status: null, final_url: null, title: null, lang: null, load_ms: null,
                 redirects: 0, timed_out: false, error: null, shot: null };
-  try {
-    await page.goto("https://api.ipify.org?format=json", { timeout: 15000 });
-    out.exit_ip = JSON.parse(await page.evaluate(() => document.body.innerText)).ip;
-  } catch (e) { out.error = "ip: " + String(e).slice(0, 120); }
   await page.setViewport({ width: 1280, height: 800 });
-  await page.setRequestInterception(true);
-  page.on("request", (r) => (r.resourceType() === "media" ? r.abort() : r.continue()));
   const started = Date.now();
   try {
     const res = await page.goto(context.url, { waitUntil: "networkidle2", timeout: 30000 });
@@ -3359,6 +3357,11 @@ export default async ({ page, context }) => {
     out.lang = await page.evaluate(() => document.documentElement.lang || null);
     out.shot = await page.screenshot({ type: "jpeg", quality: 60, encoding: "base64" });
   } catch (e) { out.error = out.error || String(e).slice(0, 200); }
+  // Last, so it can't affect the visit: which address (and so which country) the browser used.
+  try {
+    await page.goto("https://api.ipify.org?format=json", { timeout: 15000 });
+    out.exit_ip = JSON.parse(await page.evaluate(() => document.body.innerText)).ip;
+  } catch (e) { /* the country just can't be confirmed */ }
   return out;
 };
 """
@@ -3377,20 +3380,41 @@ def _browserless_geo(url: str, country: str) -> tuple[int, dict | bytes]:
         return exc.code, exc.read(2000)
 
 
+PROXY_FAILURES = ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY", "ERR_NO_SUPPORTED_PROXIES", "ERR_SOCKS")
+SITE_FAILURES = {"ERR_NAME_NOT_RESOLVED": "the domain doesn't resolve from here",
+                 "ERR_CONNECTION_REFUSED": "the server refused the connection",
+                 "ERR_CONNECTION_TIMED_OUT": "the server didn't answer",
+                 "ERR_CONNECTION_RESET": "the connection was cut off",
+                 "ERR_CONNECTION_CLOSED": "the connection was closed",
+                 "ERR_ADDRESS_UNREACHABLE": "the server can't be reached from here",
+                 "ERR_SSL_PROTOCOL_ERROR": "the secure connection failed",
+                 "ERR_CERT_": "the SSL certificate was rejected"}
+
+
 def geo_summary(loc: dict, raw: dict, exit_owner: dict | None, requested_host: str) -> dict:
     """Turn what the remote browser saw into a verdict for one location."""
     exit_country = (exit_owner or {}).get("country")
-    final_host = urllib.parse.urlsplit(raw.get("final_url") or "").hostname or ""
+    code = raw.get("status")
+    final_url = raw.get("final_url") or ""
+    loaded = bool(code) and final_url.startswith(("http://", "https://"))
+    error = raw.get("error") or ""
     out = {"location": loc, "exit_ip": raw.get("exit_ip"), "exit_country": exit_country,
            "exit_network": (exit_owner or {}).get("provider") or (exit_owner or {}).get("as_name"),
            "in_country": None if not exit_country else exit_country.upper() == loc["country"],
-           "status": raw.get("status"), "final_url": raw.get("final_url"), "title": raw.get("title"),
-           "lang": raw.get("lang"), "load_ms": raw.get("load_ms"), "redirects": raw.get("redirects") or 0,
+           "status": code, "final_url": final_url if loaded else None, "title": raw.get("title") if loaded else None,
+           "lang": raw.get("lang") if loaded else None, "load_ms": raw.get("load_ms"), "redirects": raw.get("redirects") or 0,
            "timed_out": bool(raw.get("timed_out")),
-           "image": f"data:image/jpeg;base64,{raw['shot']}" if raw.get("shot") else None, "notes": []}
-    code = raw.get("status")
-    if raw.get("error") and not code and not raw.get("shot"):
-        out["verdict"], out["summary"] = "fail", "The site didn't load from here."
+           "image": f"data:image/jpeg;base64,{raw['shot']}" if raw.get("shot") and (loaded or raw.get("timed_out")) else None,
+           "notes": []}
+    if any(p in error for p in PROXY_FAILURES):
+        out["verdict"] = "error"
+        out["summary"] = f"Browserless had no working connection in {loc['country']} just now. This isn't about the website."
+    elif not loaded and not out["timed_out"]:
+        reason = next((why for key, why in SITE_FAILURES.items() if key in error), None)
+        out["verdict"] = "fail"
+        out["summary"] = f"The site didn't load from here: {reason}." if reason else "The site didn't load from here."
+        if error and not reason:
+            out["notes"].append(f"Browser error: {error[:160]}")
     elif code in (403, 451):
         out["verdict"], out["summary"] = "fail", f"Blocked from here (HTTP {code})."
     elif code and code >= 500:
@@ -3402,11 +3426,131 @@ def geo_summary(loc: dict, raw: dict, exit_owner: dict | None, requested_host: s
     else:
         out["verdict"] = "pass"
         out["summary"] = f"Loads in {raw['load_ms'] / 1000:.1f} s." if raw.get("load_ms") else "Loads."
+    final_host = urllib.parse.urlsplit(out["final_url"] or "").hostname or ""
     if final_host and final_host.removeprefix("www.") != requested_host.removeprefix("www."):
         out["notes"].append(f"Visitors here are sent to {final_host}.")
     if out["in_country"] is False:
         out["notes"].append(f"Browserless couldn't place a browser in {loc['country']}; this visit came from {exit_country}.")
     return out
+
+
+# ---- Quick status from every location (Globalping) ---------------------------------------------
+def _globalping(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
+    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if GLOBALPING_TOKEN:
+        headers["Authorization"] = f"Bearer {GLOBALPING_TOKEN}"
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:  # noqa: S310 - fixed https URL
+            return res.status, json.loads(res.read(2_000_000))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read(20_000))
+        except ValueError:
+            return exc.code, {}
+
+
+async def globalping_http(host: str, countries: list[str]) -> tuple[list[dict], str | None]:
+    """One HTTPS GET of / from a probe in each country. Returns (test results, problem)."""
+    async def measure(locs: list[str]) -> tuple[int, list[dict]]:
+        body = {"type": "http", "target": host, "locations": [{"country": c, "limit": 1} for c in locs],
+                "measurementOptions": {"protocol": "HTTPS", "request": {"method": "GET", "path": "/"}}}
+        code, made = await run_in_threadpool(_globalping, "POST", GLOBALPING_URL, body)
+        if code not in (200, 202) or "id" not in made:
+            return code, []
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.8)
+            code, got = await run_in_threadpool(_globalping, "GET", f"{GLOBALPING_URL}/{made['id']}")
+            if code == 200 and got.get("status") == "finished":
+                return 200, got.get("results") or []
+        return 200, (got.get("results") or []) if code == 200 else []
+
+    code, results = await measure(countries)
+    if code == 422:
+        # Some country has no probe right now: ask each country on its own and keep what works.
+        each = await asyncio.gather(*(measure([c]) for c in countries))
+        results = [r for c, rs in each if c == 200 for r in rs]
+        code = 200 if results else 422
+    if code == 429:
+        return [], "Globalping's free hourly limit is used up. Try again later in the hour."
+    if code != 200:
+        return [], f"Globalping couldn't run the check (HTTP {code})."
+    return results, None
+
+
+def status_verdict(result: dict) -> dict:
+    """One probe's HTTP answer -> pass / warn / fail with a short sentence."""
+    r = result.get("result") or {}
+    probe = result.get("probe") or {}
+    timings = r.get("timings") or {}
+    total = timings.get("total")
+    out = {"country": (probe.get("country") or "").upper(), "probe_city": probe.get("city"), "probe_network": probe.get("network"),
+           "code": r.get("statusCode"), "code_name": r.get("statusCodeName"), "ms": total, "ttfb": timings.get("firstByte"),
+           "address": r.get("resolvedAddress")}
+    headers = {k.lower(): v for k, v in (r.get("headers") or {}).items()}
+    code = out["code"]
+    if r.get("status") != "finished" or not code:
+        raw = (r.get("rawOutput") or "").strip()
+        if r.get("failureSource") == "internal":
+            out.update(state="error", summary="The test machine had a problem. This isn't about the website.")
+        else:
+            why = ("timed out" if "timeout" in raw.lower() else "the connection was refused" if "refused" in raw.lower()
+                   else "the address didn't resolve" if "enotfound" in raw.lower() or "resolve" in raw.lower() else None)
+            out.update(state="fail", summary=f"No answer: {why}." if why else "No answer.", detail=raw[:160] or None)
+        return out
+    secs = f"{total / 1000:.1f} s" if total else ""
+    bot = "cf-mitigated" in headers or (code in (403, 429, 503) and "cloudflare" in str(headers.get("server", "")).lower())
+    if 200 <= code < 300:
+        out.update(state="warn" if total and total > 3000 else "pass",
+                   summary=f"HTTP {code} in {secs}" + (" (slow)" if total and total > 3000 else ""))
+    elif 300 <= code < 400:
+        loc = str(headers.get("location") or "")
+        target = urllib.parse.urlsplit(loc).hostname if "://" in loc else None
+        out.update(state="pass", summary=f"Redirects (HTTP {code})" + (f" to {target}" if target else "") + (f" in {secs}" if secs else ""))
+    elif bot:
+        out.update(state="warn", summary=f"Bot check answered (HTTP {code}). Real visitors usually get through.")
+    elif code == 451:
+        out.update(state="fail", summary="Unavailable for legal reasons here (HTTP 451).")
+    elif code in (401, 403):
+        out.update(state="warn", summary=f"Refused (HTTP {code}). Could be blocking by country or bot protection.")
+    elif code < 500:
+        out.update(state="warn", summary=f"Error page (HTTP {code}).")
+    else:
+        out.update(state="fail", summary=f"Server error (HTTP {code}).")
+    return out
+
+
+@app.get("/api/v1/geoview/status")
+async def geoview_status(request: Request, response: Response, domain: str = Query(..., min_length=1, max_length=300)) -> dict:
+    """Does the home page answer from each location? Free probes, no browser, cached for 10 minutes."""
+    clean = _clean_domain(domain)
+    ips = await _ips_of(clean)
+    if not ips or not all(is_public_ip(i) for i in ips):
+        raise HTTPException(status_code=404, detail="This domain has no public website address.")
+    visitor = _visitor_ip(request) or "unknown"
+    if not await daily_counter(f"vdig:geostatus-visitor:{visitor}", GEO_STATUS_PER_VISITOR_DAY):
+        raise HTTPException(status_code=429, detail="You've run the worldwide status check a lot today. Try again tomorrow.")
+    logged = track(request, "geostatus", clean)
+    try:
+        results, problem = await asyncio.wait_for(globalping_http(clean, [g["country"] for g in GEO_LOCATIONS]), 45)
+    except asyncio.TimeoutError:
+        results, problem = [], "The test machines didn't finish in time. Try again."
+    finally:
+        await tracked(logged)
+    by_country: dict[str, dict] = {}
+    for r in results:
+        v = status_verdict(r)
+        by_country.setdefault(v["country"], v)
+    rows = [{"id": g["id"], **by_country[g["country"]]} if g["country"] in by_country
+            else {"id": g["id"], "state": "none", "summary": "No test machine available in this country right now."}
+            for g in GEO_LOCATIONS]
+    ok = sum(1 for r in rows if r["state"] == "pass")
+    tested = sum(1 for r in rows if r["state"] in ("pass", "warn", "fail"))
+    _set_cdn_cache(response, 60 if problem else 600)
+    return {"domain": clean, "rows": rows, "problem": problem, "ok": ok, "tested": tested}
 
 
 @app.get("/api/v1/geoview/locations")
@@ -3477,7 +3621,7 @@ async def geoview(request: Request, response: Response, domain: str = Query(...,
         raise HTTPException(status_code=502, detail=detail)
     exit_owner = await lookup_ip_owner(data["exit_ip"]) if data.get("exit_ip") and is_public_ip(data["exit_ip"]) else None
     result = geo_summary(place, data, exit_owner, clean)
-    _set_cdn_cache(response, 21600 if result["verdict"] != "fail" else 600)
+    _set_cdn_cache(response, 600 if result["verdict"] in ("fail", "error") else 21600)
     return result
 
 
