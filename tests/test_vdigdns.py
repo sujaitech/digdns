@@ -542,6 +542,59 @@ class ScreenshotTests(Patched):
         self.assertEqual(err.exception.status_code, 404)
 
 
+class IpReputationTests(Patched):
+    def setUp(self):
+        async def describe(ip): return {"ptr": ["host.example.net"], "forward_confirmed": True, "owner": {"asn": "64500", "provider": "Example"}}
+        async def no_lists(domain, targets):
+            return {"ips": [{"ip": targets[0][0], "roles": ["Checked IP"], "lists": [{"list": "SpamCop", "state": "clean"}]}]}
+        async def exits(): return {"185.220.101.1"}
+        self.patch(_describe_ip=describe, analyze_blocklists=no_lists, tor_exits=exits,
+                   USAGE_DB_URL="", USAGE_DB_TOKEN="", ABUSEIPDB_KEY="")
+
+    def test_bad_input_is_refused(self):
+        with self.assertRaises(Exception) as err:
+            run(main.ip_lookup(FakeRequest(), FakeResponse(), ip="not-an-ip"))
+        self.assertEqual(err.exception.status_code, 400)
+
+    def test_private_addresses_are_explained_not_looked_up(self):
+        res = run(main.analyze_ip("192.168.1.10"))
+        self.assertEqual(res["status"], "info")
+        self.assertIn("private", res["summary"])
+        self.assertIn("carrier-grade", run(main.analyze_ip("100.64.3.4"))["summary"])
+
+    def test_without_a_key_it_still_checks_blocklists_and_tor(self):
+        res = run(main.analyze_ip("185.220.101.1"))
+        self.assertFalse(res["abuseipdb"]["available"])
+        self.assertTrue(res["tor"])
+        self.assertEqual(res["status"], "warn")
+
+    def test_abuseipdb_reports_set_the_verdict(self):
+        def check(ip):
+            return 200, {"data": {"abuseConfidenceScore": 100, "totalReports": 812, "numDistinctUsers": 150,
+                                  "usageType": "Data Center/Web Hosting/Transit", "isTor": False}}
+        self.patch(ABUSEIPDB_KEY="k", _abuseipdb_check=check)
+        res = run(main.analyze_ip("45.33.20.7"))
+        self.assertEqual((res["status"], res["abuseipdb"]["reports"]), ("fail", 812))
+        self.assertTrue(any("data centre" in n for n in res["notes"]))
+
+    def test_abuseipdb_limit_is_explained(self):
+        self.patch(ABUSEIPDB_KEY="k", _abuseipdb_check=lambda ip: (429, {"errors": [{"detail": "Daily rate limit"}]}))
+        res = run(main.analyze_ip("45.33.20.7"))
+        self.assertIn("limit", res["abuseipdb"]["reason"])
+        self.assertEqual(res["status"], "pass")
+
+    def test_tor_list_is_parsed(self):
+        text = "185.220.101.1\n2001:db8::7\nExitAddress 192.42.116.16 2026-11-01 10:00:00\n# comment\n"
+        self.assertEqual(main.parse_tor_exits(text), {"185.220.101.1", "2001:db8::7", "192.42.116.16"})
+
+    def test_my_ip_comes_from_vercel_headers_and_is_never_cached(self):
+        req = FakeRequest({"x-real-ip": "45.33.20.7", "x-vercel-ip-country": "IN", "x-vercel-ip-city": "Chennai"})
+        resp = FakeResponse()
+        res = run(main.my_ip(req, resp))
+        self.assertEqual((res["ip"], res["country"], res["city"], res["version"]), ("45.33.20.7", "IN", "Chennai", 4))
+        self.assertEqual(resp.headers["Cache-Control"], "no-store")
+
+
 class FrontendTests(unittest.TestCase):
     """Cheap checks on the page itself."""
     def setUp(self):
