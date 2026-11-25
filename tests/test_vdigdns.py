@@ -642,6 +642,20 @@ class GeoViewTests(Patched):
         self.assertTrue(any("example.de" in n for n in res["notes"]))
         self.assertTrue(any("couldn't place a browser in DE" in n for n in res["notes"]))
 
+    def test_a_failed_visit_is_not_reported_as_a_redirect(self):
+        loc = main.GEO_BY_ID["in"]
+        res = main.geo_summary(loc, {"status": None, "final_url": "chrome-error://chromewebdata/",
+                                     "error": "Error: net::ERR_CONNECTION_REFUSED at https://example.com/", "shot": "QUJD"}, None, "example.com")
+        self.assertEqual(res["verdict"], "fail")
+        self.assertIn("refused", res["summary"])
+        self.assertEqual((res["notes"], res["image"]), ([], None))
+
+    def test_a_proxy_failure_is_not_blamed_on_the_site(self):
+        loc = main.GEO_BY_ID["ae"]
+        res = main.geo_summary(loc, {"error": "Error: net::ERR_TUNNEL_CONNECTION_FAILED at https://example.com/"}, None, "example.com")
+        self.assertEqual(res["verdict"], "error")
+        self.assertIn("isn't about the website", res["summary"])
+
     def test_daily_allowance_is_enforced(self):
         self.fake()
         async def full(key, limit): return not key.startswith("vdig:geo")
@@ -650,6 +664,44 @@ class GeoViewTests(Patched):
             run(main.geoview(FakeRequest(), FakeResponse(), domain="example.com", loc="jp"))
         self.assertEqual(err.exception.status_code, 429)
         self.assertEqual(self.calls, [])
+
+    def test_worldwide_status_marks_each_place(self):
+        def probe(country, city, **result):
+            return {"probe": {"country": country, "city": city, "network": "Net"}, "result": {"status": "finished", **result}}
+        answers = [probe("JP", "Osaka", statusCode=200, timings={"total": 420}),
+                   probe("US", "Ashburn", statusCode=301, headers={"Location": "https://www.example.com/"}, timings={"total": 90}),
+                   probe("DE", "Berlin", statusCode=403, headers={"Server": "cloudflare", "cf-mitigated": "challenge"}),
+                   probe("IN", "Mumbai", statusCode=503),
+                   {"probe": {"country": "BR"}, "result": {"status": "failed", "rawOutput": "connect ETIMEDOUT / timeout"}},
+                   probe("AU", "Sydney", statusCode=200, timings={"total": 4200})]
+        calls = []
+        def gp(method, url, body=None):
+            calls.append(method)
+            if method == "POST":
+                return 202, {"id": "m1"}
+            return 200, {"status": "finished", "results": answers}
+        self.patch(_globalping=gp)
+        res = run(main.geoview_status(FakeRequest(), FakeResponse(), domain="example.com"))
+        rows = {r["id"]: r for r in res["rows"]}
+        self.assertEqual(rows["jp"]["state"], "pass")
+        self.assertEqual(rows["jp"]["probe_city"], "Osaka")
+        self.assertIn("www.example.com", rows["us"]["summary"])
+        self.assertEqual((rows["de"]["state"], rows["in"]["state"], rows["br"]["state"]), ("warn", "fail", "fail"))
+        self.assertIn("timed out", rows["br"]["summary"])
+        self.assertIn("slow", rows["au"]["summary"])
+        self.assertEqual(rows["ae"]["state"], "none")
+        self.assertEqual((res["ok"], res["tested"]), (2, 6))
+
+    def test_status_check_survives_a_country_without_probes(self):
+        def gp(method, url, body=None):
+            if method == "POST":
+                return (422, {}) if len(body["locations"]) > 1 or body["locations"][0]["country"] == "AE" else (202, {"id": body["locations"][0]["country"]})
+            cc = url.rsplit("/", 1)[1]
+            return 200, {"status": "finished", "results": [{"probe": {"country": cc}, "result": {"status": "finished", "statusCode": 200, "timings": {"total": 300}}}]}
+        self.patch(_globalping=gp)
+        res = run(main.geoview_status(FakeRequest(), FakeResponse(), domain="example.com"))
+        rows = {r["id"]: r for r in res["rows"]}
+        self.assertEqual((rows["jp"]["state"], rows["ae"]["state"]), ("pass", "none"))
 
     def test_dns_view_shows_each_countrys_answer(self):
         async def pool(): return {"countries": {"JP": [{"ip": "198.51.100.1", "org": "JP ISP"}], "US": [{"ip": "198.51.100.2", "org": "US ISP"}]}}
