@@ -145,6 +145,12 @@ MAILTEST_PER_IP_DAY = 20                                       # test addresses 
 MAILTEST_MAX_BYTES = 900_000                                   # stored size cap (headers are always kept)
 SPAMCHECK_URL = "https://spamcheck.postmarkapp.com/filter"     # Postmark's free SpamAssassin API
 
+# IP reputation (optional key): AbuseIPDB free plan, 1,000 checks a day.
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
+ABUSEIPDB_PER_DAY = int(_env_float("ABUSEIPDB_PER_DAY", 900))   # leave headroom under the free 1,000
+IP_LOOKUPS_PER_VISITOR_DAY = 100
+TOR_EXIT_LIST_URL = "https://check.torproject.org/torbulkexitlist"
+
 # Website screenshots (optional): Browserless free plan, 1,000 units a month.
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "")
 BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "https://production-sfo.browserless.io").rstrip("/")
@@ -3075,6 +3081,191 @@ async def mailtest_result(test_id: str, response: Response) -> dict:
     return {**base, "state": "done", "report": report}
 
 
+# ---- IP reputation and "what's my IP" -----------------------------------------------------------
+_tor_mem: dict[str, Any] = {"at": 0.0, "ips": None}
+
+
+def _download_tor_exits() -> set[str]:
+    req = urllib.request.Request(TOR_EXIT_LIST_URL, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=10) as res:  # noqa: S310 - fixed https URL
+        return parse_tor_exits(res.read(2_000_000).decode("utf-8", "replace"))
+
+
+def parse_tor_exits(text: str) -> set[str]:
+    """Either the bulk list (one IP per line) or the exit-addresses format ("ExitAddress <ip> <date>")."""
+    found = set()
+    for m in re.finditer(r"(?m)^\s*(?:ExitAddress\s+)?([0-9a-fA-F:.]{7,45})\b", text):
+        try:
+            found.add(str(ipaddress.ip_address(m.group(1))))
+        except ValueError:
+            pass
+    return found
+
+
+async def tor_exits() -> set[str] | None:
+    """The Tor Project's current list of exit relays (cached for an hour). None if unavailable."""
+    if _tor_mem["ips"] is not None and time.monotonic() - _tor_mem["at"] < 3600:
+        return _tor_mem["ips"]
+    try:
+        ips = await asyncio.wait_for(run_in_threadpool(_download_tor_exits), 12)
+        if len(ips) > 100:   # a real list has over a thousand entries
+            _tor_mem.update(at=time.monotonic(), ips=ips)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Tor exit list failed: %s", type(exc).__name__)
+    return _tor_mem["ips"]
+
+
+def _abuseipdb_check(ip: str) -> tuple[int, dict]:
+    url = "https://api.abuseipdb.com/api/v2/check?" + urllib.parse.urlencode({"ipAddress": ip, "maxAgeInDays": 90})
+    req = urllib.request.Request(url, headers={"Key": ABUSEIPDB_KEY, "Accept": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:  # noqa: S310 - fixed https URL
+            return res.status, json.loads(res.read(200_000))
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read(20_000))
+        except ValueError:
+            return exc.code, {}
+
+
+USAGE_TYPE_NOTE = {
+    "Data Center/Web Hosting/Transit": "a server in a data centre, not a home or office connection",
+    "Fixed Line ISP": "a home or office broadband connection",
+    "Mobile ISP": "a mobile phone network, where many people share one address",
+    "Content Delivery Network": "a CDN, which serves many websites from shared addresses",
+    "Search Engine Spider": "a search engine's crawler",
+    "University/College/School": "a school or university network",
+    "Commercial": "a business network",
+    "Organization": "an organisation's network",
+    "Government": "a government network",
+    "Military": "a military network",
+    "Library": "a library network",
+    "Reserved": "a reserved address range",
+}
+
+
+def describe_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    if addr.is_loopback:
+        return "a loopback address: it always means \"this same device\""
+    if addr.is_link_local:
+        return "a link-local address, used only on the local network segment (often a sign DHCP didn't work)"
+    if isinstance(addr, ipaddress.IPv4Address) and addr in ipaddress.ip_network("100.64.0.0/10"):
+        return "a carrier-grade NAT address: your provider shares one public address between many customers"
+    if addr.is_private:
+        return "a private address, used inside home and office networks and never seen on the internet"
+    return "a reserved address that isn't used on the public internet"
+
+
+async def analyze_ip(ip: str, allow_abuseipdb: bool = True) -> dict:
+    addr = ipaddress.ip_address(ip)
+    res: dict[str, Any] = {"ip": str(addr), "version": addr.version, "public": is_public_ip(str(addr)),
+                           "errors": [], "warnings": [], "notes": []}
+    if not res["public"]:
+        res.update(status="info", summary=f"{addr} is {describe_private(addr)}. It can't have an internet reputation.")
+        return res
+
+    async def abuse() -> dict:
+        if not ABUSEIPDB_KEY:
+            return {"available": False, "reason": "AbuseIPDB isn't connected on this server."}
+        if not allow_abuseipdb or not await daily_counter("vdig:abuseipdb", ABUSEIPDB_PER_DAY):
+            return {"available": False, "reason": "Today's AbuseIPDB allowance is used up. It resets at midnight UTC."}
+        try:
+            code, body = await asyncio.wait_for(run_in_threadpool(_abuseipdb_check, str(addr)), 15)
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "reason": f"AbuseIPDB didn't answer ({type(exc).__name__})."}
+        if code == 429:
+            return {"available": False, "reason": "AbuseIPDB's daily limit is reached. It resets at midnight UTC."}
+        if code != 200 or "data" not in body:
+            detail = (body.get("errors") or [{}])[0].get("detail") if isinstance(body, dict) else None
+            return {"available": False, "reason": f"AbuseIPDB refused the lookup ({detail or f'HTTP {code}'})."}
+        d = body["data"]
+        return {"available": True, "score": int(d.get("abuseConfidenceScore") or 0), "reports": int(d.get("totalReports") or 0),
+                "reporters": int(d.get("numDistinctUsers") or 0), "last_reported": d.get("lastReportedAt"),
+                "usage_type": d.get("usageType"), "isp": d.get("isp"), "domain": d.get("domain"),
+                "hostnames": (d.get("hostnames") or [])[:5], "country": d.get("countryCode"),
+                "tor": bool(d.get("isTor")), "whitelisted": bool(d.get("isWhitelisted")),
+                "url": f"https://www.abuseipdb.com/check/{addr}"}
+
+    async def blocklists() -> dict | None:
+        return await analyze_blocklists(None, [(str(addr), ["Checked IP"])]) if addr.version == 4 else None
+
+    described, abuse_res, bl, exits = await asyncio.gather(_describe_ip(str(addr)), abuse(), blocklists(), tor_exits())
+    res.update(ptr=described.get("ptr") or [], forward_confirmed=described.get("forward_confirmed", False),
+               owner=described.get("owner"), abuseipdb=abuse_res, blocklists=bl,
+               tor=(str(addr) in exits) if exits is not None else (abuse_res.get("tor") if abuse_res.get("available") else None))
+    if abuse_res.get("available") and abuse_res.get("tor"):
+        res["tor"] = True
+
+    listed = [l["list"] for e in (bl or {}).get("ips", []) for l in e["lists"] if l["state"] == "listed"]
+    res["listed_on"] = listed
+    score = abuse_res.get("score") if abuse_res.get("available") else None
+    if score is not None and score >= 75 or len(listed) >= 2:
+        res["status"] = "fail"
+        res["summary"] = "High risk: this address is widely reported for abuse." if score is not None and score >= 75 \
+            else f"High risk: this address is on {len(listed)} spam blocklists."
+    elif score is not None and score >= 25 or listed:
+        res["status"] = "warn"
+        res["summary"] = "Some abuse reports: treat traffic from this address with care."
+    elif res["tor"]:
+        res["status"] = "warn"
+        res["summary"] = "This is a Tor exit node: it relays traffic for many anonymous users."
+    else:
+        res["status"] = "pass"
+        res["summary"] = "No abuse reports or blocklist listings found." if score is not None else \
+            "Not on any blocklist we checked. (AbuseIPDB's community reports weren't checked.)"
+    if res["tor"]:
+        res["warnings"].append("Tor exit node: whatever one Tor user does, every site sees it coming from this address. Reports may not be about the person you're looking at.")
+    if abuse_res.get("available") and abuse_res.get("whitelisted"):
+        res["notes"].append("AbuseIPDB lists this address as a known good service (whitelisted).")
+    usage = abuse_res.get("usage_type") if abuse_res.get("available") else None
+    if usage and usage in USAGE_TYPE_NOTE:
+        res["notes"].append(f"Usage type: {USAGE_TYPE_NOTE[usage]}.")
+    if usage == "Mobile ISP" or (usage == "Fixed Line ISP" and score):
+        res["notes"].append("Addresses on consumer and mobile networks change hands, so old reports may be about a previous user.")
+    return res
+
+
+def _visitor_ip(request: Request) -> str:
+    return client_info(request)["ip"]
+
+
+@app.get("/api/v1/ip")
+async def ip_lookup(request: Request, response: Response, ip: str | None = Query(None, max_length=45)) -> dict:
+    """Reputation of an IP address (yours when no ip is given)."""
+    target = (ip or "").strip() or _visitor_ip(request)
+    try:
+        addr = ipaddress.ip_address(target)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Enter an IP address, such as 203.0.113.5 or 2001:db8::1.") from exc
+    visitor = _visitor_ip(request) or "unknown"
+    allowed = await daily_counter(f"vdig:ip-visitor:{visitor}", IP_LOOKUPS_PER_VISITOR_DAY)
+    logged = track(request, "ip", str(addr))
+    res = await _safe("IP reputation", analyze_ip(str(addr), allow_abuseipdb=allowed), 25)
+    await tracked(logged)
+    if ip:
+        _set_cdn_cache(response, 60 if res.get("status") == "error" else 3600)
+    else:
+        response.headers["Cache-Control"] = "no-store"  # depends on who's asking
+    return res
+
+
+@app.get("/api/v1/myip")
+async def my_ip(request: Request, response: Response) -> dict:
+    """The visitor's public IP as our server sees it, with location (from Vercel's edge), network and reverse DNS."""
+    response.headers["Cache-Control"] = "no-store"
+    info = client_info(request)
+    out: dict[str, Any] = {"ip": info["ip"], "country": info["country"], "region": info["region"], "city": info["city"], "user_agent": info["ua"]}
+    try:
+        addr = ipaddress.ip_address(info["ip"])
+    except ValueError:
+        return {**out, "version": None, "public": False}
+    out.update(version=addr.version, public=is_public_ip(str(addr)))
+    if out["public"]:
+        described = await _safe("Network", _describe_ip(str(addr)), 8)
+        out.update(ptr=described.get("ptr") or [], owner=described.get("owner"))
+    return out
+
+
 # ---- Website screenshot (Browserless) ----------------------------------------------------------
 def _browserless_shot(url: str, with_viewport: bool) -> tuple[int, bytes, str]:
     body: dict[str, Any] = {"url": url, "bestAttempt": True, "gotoOptions": {"waitUntil": "networkidle2", "timeout": 15000},
@@ -3118,7 +3309,7 @@ async def health() -> dict:
     # usage_log / admin_ready only say whether the log is set up (never any secret), so the admin page
     # can tell the owner exactly which setup step is missing.
     return {"status": "ok", "smtp_enabled": ENABLE_SMTP, "usage_log": usage_enabled(),
-            "admin_ready": len(ADMIN_TOKEN) >= 16, "mailtest": mailtest_enabled(), "screenshots": bool(BROWSERLESS_TOKEN),
+            "admin_ready": len(ADMIN_TOKEN) >= 16, "mailtest": mailtest_enabled(), "screenshots": bool(BROWSERLESS_TOKEN), "abuseipdb": bool(ABUSEIPDB_KEY),
             "time": datetime.now(timezone.utc).isoformat()}
 
 

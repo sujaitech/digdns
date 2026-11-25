@@ -17,13 +17,15 @@ VdigDNS is a domain diagnostics tool for sysadmins. Enter a domain and get one r
 
 The report opens with a **What needs attention** list of every problem, worst first, and can be copied as plain text for tickets or email.
 
-Plus five tools:
+Plus seven tools:
 
 - **Propagation:** compares resolvers with your authoritative nameserver, worldwide (one ISP resolver in each of up to 60 countries), in one chosen country, or just the 8 big public resolvers. Shows the percentage already updated, a summary per region, and flags domains whose answers legitimately vary by location (GeoDNS/CDNs).
 - **SPF builder:** live lookup count.
 - **DMARC builder:** includes a rollout guide.
 - **Email test:** a one-hour address to send a real email to. The report scores it out of 10 with every deduction listed: SPF, DKIM and DMARC (verified with `pyspf` and `dkimpy`), the sending server's reverse DNS and blocklists, a SpamAssassin score from Postmark's free SpamCheck API, and content checks (plain-text version, link shorteners, blocklisted link domains, unsubscribe headers). Needs Cloudflare Email Routing; see *Email test setup*.
 - **Headers & bounces:** paste a bounce (non-delivery report) to get the cause in plain English, who has to fix it and how, per recipient. It reads Exim, Postfix, Sendmail, qmail, Gmail, Microsoft 365 and standard RFC 3464 reports, explains the SMTP and enhanced status codes and the stage at which the mail was refused, and spots when several unrelated providers were all refused by one server (your own outgoing filter). Or paste an email's headers for a plain-English verdict: SPF, DKIM, DMARC and ARC results, the real sending server, every hop with its delay and encryption, spam-filter scores (SpamAssassin, Microsoft SCL/BCL), and warning signs such as a mismatched Reply-To or a fake address in the display name. Parsed entirely in the browser; the headers are never uploaded.
+- **IP lookup:** shows your public IP (IPv4 and IPv6 separately, via ipify), approximate location, network and reverse DNS, and explains why your local network IP can't be shown. Checks any IP's reputation: AbuseIPDB's community abuse reports and confidence score (optional key), the Tor Project's exit-node list, the IPv4 spam blocklists, network owner and reverse DNS. Private, CGNAT and reserved addresses are explained instead of looked up. Shareable as `#ip=<address>`.
+- **Speed test:** download, upload, idle and loaded latency, jitter and packet loss, with ratings for streaming, gaming and video calls. Runs Cloudflare's open-source engine (`@cloudflare/speedtest`) in the browser against Cloudflare's network, so it costs this site nothing.
 
 Live at **https://dig.sujaiprojects.stream**
 
@@ -80,6 +82,8 @@ All endpoints are `GET` and return JSON. Interactive docs are at `/api/v1/docs`.
 | `/api/v1/propagation/locations` | Countries that currently have reliable resolvers, for the country picker |
 | `/api/v1/dkim?domain=example.com&selector=selector1` | Check one DKIM selector |
 | `/api/v1/blocklist?ip=203.0.113.5` | Check one IPv4 address against the IP blocklists |
+| `/api/v1/ip?ip=203.0.113.5` | Reputation of one IPv4 or IPv6 address (your own without `ip`) |
+| `/api/v1/myip` | Your public IP as the server sees it, with location, network and reverse DNS. Never cached. |
 | `/api/v1/spf/evaluate?record=v=spf1 include:_spf.google.com ~all&domain=example.com` | Count lookups for a draft SPF record |
 | `/api/v1/health` | Liveness check, plus which optional features are set up |
 | `POST /api/v1/mailtest/new` | Create a one-hour test address |
@@ -133,6 +137,8 @@ Set these in Vercel under **Project → Settings → Environment Variables**.
 | `MAILTEST_SECRET` | none | Shared with the Worker's `VDIG_SECRET`, 24+ random characters |
 | `BROWSERLESS_TOKEN` | none | Browserless API token for website screenshots (free plan: 1,000 units a month) |
 | `SCREENSHOT_PER_DAY` | `30` | New screenshots per day across all visitors, to stay inside the free plan |
+| `ABUSEIPDB_KEY` | none | AbuseIPDB API key for IP abuse reports (free plan: 1,000 checks a day). Without it the IP lookup still checks blocklists, Tor and the network. |
+| `ABUSEIPDB_PER_DAY` | `900` | AbuseIPDB lookups per day across all visitors, under the free 1,000. Each visitor is also limited to 100 IP lookups a day. |
 | `LOG_RETENTION_DAYS` | `30` | Days before log entries are deleted. If you change it, change "30 days" in the page footer too. |
 
 ## Deploying changes
@@ -162,4 +168,7 @@ Catch-all addresses only work on a main domain, not a subdomain, so the subdomai
 - **The email test can't measure inbox placement** (inbox vs spam folder at Gmail, Outlook and others). That needs real seed mailboxes there. Its score is VdigDNS's own rubric, not mail-tester's, and Postmark's SpamCheck API is free but may change or stop without notice.
 - **Screenshots use Browserless's free plan** (1,000 units a month). `SCREENSHOT_PER_DAY` caps new ones; repeats are served from Vercel's cache.
 - **Regional resolvers are volunteers' and ISPs' open resolvers** listed by public-dns.info. Only ones with 99%+ reliability, checked in the last 3 days, are used, and the list is refreshed twice a day (shared through the Redis database when connected), but any of them can go offline or misbehave. One odd result isn't proof of a problem.
+- **Your local network IP can't be shown.** Browsers have hidden it from web pages since 2019 (WebRTC uses random `.local` names instead), and it's never sent to websites. The page tells visitors how to find it themselves.
+- **AbuseIPDB scores are community reports,** not proof. Addresses on mobile and home networks change hands, and Tor exits and VPNs carry many users' traffic, so a report may be about someone else.
+- **The speed test measures to Cloudflare's nearest data centre,** loads its engine from jsDelivr, can use a few hundred MB on fast connections, and sends anonymous results to Cloudflare. A content blocker can stop it; the page then links to speed.cloudflare.com.
 - **The big anycast resolvers answer from their site nearest to Vercel's region**, so they're shown separately from the country view. Everything is checked over IPv4 only.
